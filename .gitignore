@@ -1,0 +1,5 @@
+target/
+debug/
+
+.idea
+.vscode
