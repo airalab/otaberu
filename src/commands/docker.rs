@@ -2,7 +2,6 @@ use bollard;
 use bollard::Docker;
 use rust_socketio::asynchronous::Client;
 
-
 use futures_util::TryStreamExt;
 use std;
 use tracing::{error, info};
@@ -12,9 +11,9 @@ use serde::{Deserialize, Serialize};
 use crate::commands::{RobotJob, RobotJobResult};
 
 pub async fn execute_launch(socket: Client, robot_job: RobotJob) {
-    let docker_launch = DockerLaunch {
-        args: serde_json::from_str::<DockerLaunchArgs>(&robot_job.args).unwrap(),
-    };
+    let args = serde_json::from_str::<DockerLaunchArgs>(&robot_job.args).unwrap();
+    info!("launching docker job {:?}", args);
+    let docker_launch = DockerLaunch { args };
 
     let robot_job_result = match docker_launch.execute(robot_job.clone()).await {
         Ok(result) => {
@@ -35,10 +34,20 @@ pub async fn execute_launch(socket: Client, robot_job: RobotJob) {
         .await;
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct DockerLaunchArgs {
     pub image: String,
+    pub container_name: String,
+    pub custom_cmd: String,
     pub save_logs: Option<bool>,
+    pub network_mode: String,
+    pub ports: Vec<DockerMap>,
+    pub volumes: Vec<DockerMap>,
+}
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct DockerMap {
+    key: String,
+    value: String,
 }
 
 pub struct DockerLaunch {
@@ -67,13 +76,31 @@ impl DockerLaunch {
 
         info!("docker image pulled");
 
+        let mut volumes = vec![];
+        for volume_pair in self.args.volumes.iter() {
+            volumes.push(format!("{}:{}", volume_pair.key, volume_pair.value))
+        }
+
+        let mut config = bollard::container::Config::<&str> {
+            image: Some(&self.args.image),
+            host_config: Some(bollard::models::HostConfig {
+                network_mode: Some(self.args.network_mode.clone()),
+                binds: Some(volumes),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        if self.args.custom_cmd.len() > 0 {
+            config.cmd = Some(self.args.custom_cmd.split(" ").collect::<Vec<&str>>())
+        }
+
         let id = docker
             .create_container::<&str, &str>(
-                None,
-                bollard::container::Config {
-                    image: Some(&self.args.image),
-                    ..Default::default()
-                },
+                Some(bollard::container::CreateContainerOptions {
+                    name: &self.args.container_name,
+                    platform: None,
+                }),
+                config,
             )
             .await?
             .id;
@@ -117,4 +144,3 @@ impl DockerLaunch {
         Ok(robot_job_result)
     }
 }
-

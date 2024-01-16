@@ -2,7 +2,6 @@ use rust_socketio::{asynchronous::Client, Payload};
 
 use serde::{Deserialize, Serialize};
 
-
 use tracing::info;
 
 mod docker;
@@ -39,4 +38,3 @@ pub async fn launch_new_job(payload: Payload, socket: Client) {
         Payload::Binary(bin_data) => info!("{:?}", bin_data),
     };
 }
-
