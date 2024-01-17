@@ -2,11 +2,16 @@ name: Self-test
 
 on:
   push:
-  pull_request:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
 
 jobs:
-  test:
-    name: Test
+  build-and-upload:
+    name: Build and upload
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +48,7 @@ jobs:
             expect_cross: "--expect-cross"
             expect_cross_version: "0.2.3"
             expect_stripped: "--no-expect-stripped"
-            can_test: true
+            can_test: false
 
           - platform_name: Linux-arm
             os: ubuntu-20.04
@@ -190,52 +195,53 @@ jobs:
 
     runs-on: ${{ matrix.platform.os }}
     steps:
-      - name: Checkout
+      - name: Checkout 
         uses: actions/checkout@v3
-      - name: Copy test project to root
+        with:
+          repository: ${{github.repository}}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.target }}
+      - name: Get the release version from the tag
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --verbose --release --target ${{ matrix.platform.target }}
+      - name: list result files (debug)
         shell: bash
         run: |
-          cp -a test-project/* .
-          rm -fr test-project
-      - name: Run both commands
-        uses: ./
-        with:
-          command: both
-          cross-version: ${{ matrix.platform.cross-version }}
-          target: ${{ matrix.platform.target }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: ${{ matrix.platform.can_test }}
-      - name: Run test command
-        uses: ./
-        with:
-          command: test
-          cross-version: ${{ matrix.platform.cross-version }}
-          target: ${{ matrix.platform.target }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        if: ${{ matrix.platform.can_test }}
-      - name: Run build command
-        uses: ./
-        with:
-          command: build
-          cross-version: ${{ matrix.platform.cross-version }}
-          target: ${{ matrix.platform.target }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          strip: true
-      - name: Run build command for subdir
-        uses: ./
-        with:
-          command: build
-          cross-version: ${{ matrix.platform.cross-version }}
-          working-directory: subcrate
-          target: ${{ matrix.platform.target }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          strip: true
-      - name: Check binary and cross on ${{ matrix.platform.platform_name }}
+          find . | grep robot-agent
+
+
+      - name: Build archive
         shell: bash
         run: |
-          tests/check-binary.pl \
-              --target "${{ matrix.platform.target }}" \
-              --expect-file-re "${{ matrix.platform.expect_file_re }}" \
-              --expect-cross-version "${{ matrix.platform.expect_cross_version }}" \
-              ${{ matrix.platform.expect_cross }} \
-              ${{ matrix.platform.expect_stripped }}
+          binary_name="robot-agent"
+
+          dirname="$binary_name-${{ env.VERSION }}-${{ matrix.platform.target }}"
+          mkdir "$dirname"
+          if [ "${{ matrix.platform.os }}" = "windows-latest" ]; then
+            mv "target/${{ matrix.platform.target }}/release/$binary_name.exe" "$dirname"
+          else
+            mv "target/${{ matrix.platform.target }}/release/$binary_name" "$dirname"
+          fi;
+
+          if [ "${{ matrix.platform.os }}" = "windows-latest" ]; then
+            7z a "$dirname.zip" "$dirname"
+            echo "ASSET=$dirname.zip" >> $GITHUB_ENV
+          else
+            tar -czf "$dirname.tar.gz" "$dirname"
+            echo "ASSET=$dirname.tar.gz" >> $GITHUB_ENV
+          fi
+      - name: Upload the binaries
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ${{ env.ASSET }}
+            

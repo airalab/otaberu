@@ -5,7 +5,7 @@ edition = "2021"
 
 [[bin]]
 edition = "2021"
-name = "robotagent"
+name = "robot-agent"
 path = "src/main.rs"
 
 
