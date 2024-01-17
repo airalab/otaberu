@@ -43,6 +43,7 @@ pub struct DockerLaunchArgs {
     pub network_mode: String,
     pub ports: Vec<DockerMap>,
     pub volumes: Vec<DockerMap>,
+    pub env: Vec<String>
 }
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct DockerMap {
@@ -81,8 +82,10 @@ impl DockerLaunch {
             volumes.push(format!("{}:{}", volume_pair.key, volume_pair.value))
         }
 
+
         let mut config = bollard::container::Config::<&str> {
             image: Some(&self.args.image),
+            env: Some(self.args.env.iter().map(|s| s as &str).collect()),
             host_config: Some(bollard::models::HostConfig {
                 network_mode: Some(self.args.network_mode.clone()),
                 binds: Some(volumes),
