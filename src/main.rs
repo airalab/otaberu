@@ -12,6 +12,8 @@ use serde_json::json;
 use std::thread::sleep;
 use std::time::Duration;
 
+use cli::Args;
+
 use tracing::info;
 use tracing_subscriber::FmtSubscriber;
 
@@ -20,13 +22,9 @@ use agent::{Agent, AgentBuilder};
 mod agent;
 mod cli;
 mod commands;
+mod develop;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let _ = tracing::subscriber::set_global_default(FmtSubscriber::default());
-
-    let args = cli::get_args();
-
+async fn main_normal(args: Args) -> Result<(), Box<dyn Error>> {
     let agent: Agent = AgentBuilder::default().api_key(args.api_key).build();
     info!("Starting agent: {:?}", agent);
 
@@ -63,6 +61,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .await;
         sleep(Duration::from_secs(10));
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let _ = tracing::subscriber::set_global_default(FmtSubscriber::default());
+
+    let args = cli::get_args();
+    match args.mode.as_str() {
+        "normal" => main_normal(args).await,
+        "docker_tty" => develop::docker_tty::main_docker_tty(args).await,
+        _ => {
+            panic!("Not known mode: {}", args.mode)
+        }
     }
 }
 

@@ -7,6 +7,8 @@ pub struct Args {
     pub api_key: String,
     #[arg(short, long)]
     pub robot_server_url: String,
+    #[arg(short, long, default_value = "normal")]
+    pub mode: String,
 }
 
 pub fn get_args() -> Args {

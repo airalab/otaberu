@@ -38,7 +38,7 @@ pub async fn execute_launch(socket: Client, robot_job: RobotJob) {
 pub struct DockerLaunchArgs {
     pub image: String,
     pub container_name: String,
-    pub custom_cmd: String,
+    pub custom_cmd: Option<String>,
     pub save_logs: Option<bool>,
     pub network_mode: String,
     pub ports: Vec<DockerMap>,
@@ -94,8 +94,12 @@ impl DockerLaunch {
             }),
             ..Default::default()
         };
-        if self.args.custom_cmd.len() > 0 {
-            config.cmd = Some(self.args.custom_cmd.split(" ").collect::<Vec<&str>>())
+        match &self.args.custom_cmd {
+            Some(custom_cmd) => {
+                config.tty = Some(true);
+                config.cmd = Some(custom_cmd.split(" ").collect::<Vec<&str>>())
+            }
+            None => {}
         }
 
         let id = docker
