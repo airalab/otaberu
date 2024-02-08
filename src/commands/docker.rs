@@ -2,20 +2,28 @@ use bollard;
 use bollard::Docker;
 use rust_socketio::asynchronous::Client;
 
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+
 use std;
 use tracing::{error, info};
 
 use serde::{Deserialize, Serialize};
 
-use crate::commands::{RobotJob, RobotJobResult};
+use crate::{
+    commands::{RobotJob, RobotJobResult},
+    store::{JobManager, Jobs},
+};
 
-pub async fn execute_launch(socket: Client, robot_job: RobotJob) {
+pub async fn execute_launch(socket: Client, robot_job: RobotJob, jobs: Jobs) {
     let args = serde_json::from_str::<DockerLaunchArgs>(&robot_job.args).unwrap();
     info!("launching docker job {:?}", args);
     let docker_launch = DockerLaunch { args };
-
-    let robot_job_result = match docker_launch.execute(robot_job.clone()).await {
+    let robot_job_result = match docker_launch.execute(robot_job.clone(), jobs).await {
         Ok(result) => {
             info!("job successfully executed");
             result
@@ -60,6 +68,7 @@ impl DockerLaunch {
     pub async fn execute(
         &self,
         robot_job: RobotJob,
+        jobs: Jobs,
     ) -> Result<RobotJobResult, bollard::errors::Error> {
         info!("launching docker with image {}", self.args.image);
         let docker = Docker::connect_with_socket_defaults().unwrap();
@@ -116,22 +125,91 @@ impl DockerLaunch {
 
         docker.start_container::<String>(&id, None).await?;
 
-        let logs_options: bollard::container::LogsOptions<String> =
-            bollard::container::LogsOptions {
-                follow: true,
-                stdout: true,
-                stderr: true,
-                ..Default::default()
-            };
-
-        let mut logs = docker.logs(&id, Some(logs_options));
         let mut concatenated_logs: String = String::new();
 
-        while let Some(log) = logs.try_next().await? {
-            concatenated_logs.push_str(std::str::from_utf8(&log.into_bytes()).unwrap_or(""));
-        }
+        match &self.args.custom_cmd {
+            Some(custom_cmd) => {
+                let exec = docker
+                    .create_exec(
+                        &id,
+                        bollard::exec::CreateExecOptions {
+                            attach_stdout: Some(true),
+                            attach_stderr: Some(true),
+                            attach_stdin: Some(true),
+                            tty: Some(true),
+                            cmd: Some(vec!["sh"]),
+                            ..Default::default()
+                        },
+                    )
+                    .await?
+                    .id;
 
-        info!("log: {}", concatenated_logs);
+                #[cfg(not(windows))]
+                if let bollard::exec::StartExecResults::Attached {
+                    mut output,
+                    mut input,
+                } = docker.start_exec(&exec, None).await?
+                {
+                    // pipe stdin into the docker exec stream input
+                    {
+                        let shared_jobs = Arc::clone(&jobs);
+                        let job_manager = shared_jobs.lock().unwrap();
+                        let channel_to_job_tx =
+                            job_manager.get_channel_to_job_tx_by_job_id(&robot_job.id);
+                        if let Some(channel_to_job_tx) = channel_to_job_tx {
+                            tokio::task::spawn(async move {
+                                let mut channel_to_job_rx = channel_to_job_tx.subscribe();
+                                loop {
+                                    let data = channel_to_job_rx.recv().await.unwrap();
+                                    for byte in data.as_bytes().iter() {
+                                        input.write(&[*byte]).await.ok();
+                                    }
+                                }
+                            });
+                        }
+                    }
+
+                    docker
+                        .resize_exec(
+                            &exec,
+                            bollard::exec::ResizeExecOptions {
+                                height: 35,
+                                width: 100,
+                            },
+                        )
+                        .await?;
+                    {
+                        let shared_jobs = Arc::clone(&jobs);
+                        while let Some(Ok(output)) = output.next().await {
+                            let job_manager = shared_jobs.lock().unwrap();
+                            if let Some(tx) = job_manager.get_channel_by_job_id(&robot_job.id) {
+                                tx.send(output.to_string()).unwrap();
+                            }
+
+                            info!("{:?}", output.into_bytes());
+                        }
+                    }
+                }
+            }
+            None => {
+                let logs_options: bollard::container::LogsOptions<String> =
+                    bollard::container::LogsOptions {
+                        follow: true,
+                        stdout: true,
+                        stderr: true,
+                        ..Default::default()
+                    };
+
+                let mut logs = docker.logs(&id, Some(logs_options));
+
+                while let Some(log) = logs.try_next().await? {
+                    concatenated_logs
+                        .push_str(std::str::from_utf8(&log.into_bytes()).unwrap_or(""));
+                }
+
+                info!("log: {}", concatenated_logs);
+            }
+        }
 
         docker
             .remove_container(

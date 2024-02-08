@@ -1,5 +1,5 @@
 use std::error::Error;
-use tokio;
+use tokio::{self, sync::oneshot::channel};
 
 use futures_util::FutureExt;
 
@@ -17,49 +17,74 @@ use cli::Args;
 use tracing::info;
 use tracing_subscriber::FmtSubscriber;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
+
 use agent::{Agent, AgentBuilder};
 
 mod agent;
 mod cli;
 mod commands;
 mod develop;
+mod store;
 
 async fn main_normal(args: Args) -> Result<(), Box<dyn Error>> {
     let agent: Agent = AgentBuilder::default().api_key(args.api_key).build();
     info!("Starting agent: {:?}", agent);
+    let jobs: store::Jobs = Arc::new(Mutex::new(store::JobManager::default()));
 
-    let socket = ClientBuilder::new(args.robot_server_url)
-        .auth(json!({"api_key": agent.api_key}))
+    let mut socket = ClientBuilder::new(args.robot_server_url)
+        .auth(json!({"api_key": agent.api_key, "session_type": "ROBOT"}))
         .on("error", |err, _| {
             async move { eprintln!("Error: {:#?}", err) }.boxed()
+        });
+    {
+        let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
+        socket = socket.on("new_job", move |payload: Payload, socket: Client| {
+            let shared_jobs = Arc::clone(&shared_jobs);
+            async move { commands::launch_new_job(payload, socket, shared_jobs).await }.boxed()
         })
-        .on("new_job", |payload: Payload, socket: Client| {
-            async move { commands::launch_new_job(payload, socket).await }.boxed()
+    }
+
+    {
+        let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
+        socket = socket.on("start_tunnel", move |payload: Payload, socket: Client| {
+            info!("Start tunnel request");
+            let shared_jobs = Arc::clone(&shared_jobs);
+            async move { commands::start_tunnel(payload, socket, shared_jobs).await }.boxed()
         })
-        .connect()
-        .await
-        .expect("Connection failed");
+    }
+    {
+        let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
+        socket = socket.on("message_to_robot", move |payload: Payload, socket: Client| {
+            info!("Start tunnel request");
+            let shared_jobs = Arc::clone(&shared_jobs);
+            async move { commands::message_to_robot(payload, socket, shared_jobs).await }.boxed()
+        })
+    }
+    let socket = socket.connect().await.expect("Connection failed");
 
     sleep(Duration::from_secs(1));
     loop {
-        info!("me request");
-        let _res = socket
-            .emit_with_ack(
-                "me",
-                json!({}),
-                Duration::from_secs(30),
-                |message: Payload, _socket: Client| {
-                    async move {
-                        info!("got me {:?}", message);
-                        match message {
-                            Payload::String(str) => info!("{}", str),
-                            Payload::Binary(bytes) => info!("Received bytes: {:#?}", bytes),
-                        }
-                    }
-                    .boxed()
-                },
-            )
-            .await;
+        // info!("me request");
+        // let _res = socket
+        //     .emit_with_ack(
+        //         "me",
+        //         json!({}),
+        //         Duration::from_secs(30),
+        //         |message: Payload, _socket: Client| {
+        //             async move {
+        //                 info!("got me {:?}", message);
+        //                 match message {
+        //                     Payload::String(str) => info!("{}", str),
+        //                     Payload::Binary(bytes) => info!("Received bytes: {:#?}", bytes),
+        //                 }
+        //             }
+        //             .boxed()
+        //         },
+        //     )
+        //     .await;
         sleep(Duration::from_secs(10));
     }
 }
