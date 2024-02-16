@@ -222,9 +222,10 @@ jobs:
       - name: Build archive
         shell: bash
         run: |
+          
           binary_name="robot-agent"
-
           resname="$binary_name-${{ matrix.platform.target }}"
+          cp $binary_name $resname
           echo "ASSET=$resname" >> $GITHUB_ENV
           # mkdir "$dirname"
           # if [ "${{ matrix.platform.os }}" = "windows-latest" ]; then
