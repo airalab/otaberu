@@ -14,16 +14,21 @@ use tracing::{error, info};
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent;
 use crate::{
     commands::{RobotJob, RobotJobResult},
     store::{JobManager, Jobs},
+    utils::files::{
+        create_job_data_dir, get_files_in_directory_recursively, get_job_data_path,
+        get_merklebot_data_path, upload_content,
+    },
 };
 
-pub async fn execute_launch(socket: Client, robot_job: RobotJob, jobs: Jobs) {
+pub async fn execute_launch(socket: Client, robot_job: RobotJob, agent: agent::Agent, jobs: Jobs) {
     let args = serde_json::from_str::<DockerLaunchArgs>(&robot_job.args).unwrap();
     info!("launching docker job {:?}", args);
     let docker_launch = DockerLaunch { args };
-    let robot_job_result = match docker_launch.execute(robot_job.clone(), jobs).await {
+    let robot_job_result = match docker_launch.execute(robot_job.clone(), agent, jobs).await {
         Ok(result) => {
             info!("job successfully executed");
             result
@@ -48,6 +53,7 @@ pub struct DockerLaunchArgs {
     pub container_name: String,
     pub custom_cmd: Option<String>,
     pub save_logs: Option<bool>,
+    pub store_data: Option<bool>,
     pub network_mode: String,
     pub ports: Vec<DockerMap>,
     pub volumes: Vec<DockerMap>,
@@ -68,6 +74,7 @@ impl DockerLaunch {
     pub async fn execute(
         &self,
         robot_job: RobotJob,
+        agent: agent::Agent,
         jobs: Jobs,
     ) -> Result<RobotJobResult, bollard::errors::Error> {
         info!("launching docker with image {}", self.args.image);
@@ -90,6 +97,24 @@ impl DockerLaunch {
         let mut volumes = vec![];
         for volume_pair in self.args.volumes.iter() {
             volumes.push(format!("{}:{}", volume_pair.key, volume_pair.value))
+        }
+
+        match self.args.store_data {
+            Some(true) => {
+                // 1. create folder for the job
+                let create_job_dir_res = create_job_data_dir(&robot_job.id);
+                match create_job_dir_res {
+                    Ok(path) => {
+                        info!("Sharing dir {}", path);
+                        // 2. Share folder as volume
+                        volumes.push(format!("{}:{}", path, "/merklebot/job_data/"));
+                    }
+                    _ => {
+                        error!("Couldn't create shared dir for job {}", robot_job.id);
+                    }
+                }
+            }
+            _ => {}
         }
 
         let mut config = bollard::container::Config::<&str> {
@@ -222,11 +247,38 @@ impl DockerLaunch {
             .await?;
 
         let robot_job_result = RobotJobResult {
-            job_id: robot_job.id,
+            job_id: robot_job.id.clone(),
             status: String::from("done"),
             logs: concatenated_logs,
         };
+        let job_data_path = get_job_data_path(&robot_job.id);
 
+        match &self.args.store_data {
+            Some(true) => {
+                match get_files_in_directory_recursively(&job_data_path) {
+                    //TODO: change to path
+                    Ok(paths) => {
+                        info!("{:?}", paths);
+                        for path in paths {
+                            let path_str = path.as_path().display().to_string();
+                            let key = path_str.replace(&get_merklebot_data_path(), "");
+                            upload_content(
+                                agent.robot_server_url.clone(),
+                                path,
+                                key,
+                                robot_job.id.clone(),
+                                agent.api_key.clone(),
+                            )
+                            .await;
+                        }
+                    }
+                    _ => {
+                        error!("Can't get resulting paths");
+                    }
+                }
+            }
+            _ => {}
+        }
         Ok(robot_job_result)
     }
 }

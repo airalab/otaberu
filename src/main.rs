@@ -28,14 +28,18 @@ mod cli;
 mod commands;
 mod develop;
 mod store;
+mod utils;
 
 async fn main_normal(args: Args) -> Result<(), Box<dyn Error>> {
-    let agent: Agent = AgentBuilder::default().api_key(args.api_key).build();
+    let agent: Agent = AgentBuilder::default()
+        .api_key(args.api_key)
+        .robot_server_url(args.robot_server_url.clone())
+        .build();
     info!("Starting agent: {:?}", agent);
     let jobs: store::Jobs = Arc::new(Mutex::new(store::JobManager::default()));
 
     let mut socket = ClientBuilder::new(args.robot_server_url)
-        .auth(json!({"api_key": agent.api_key, "session_type": "ROBOT"}))
+        .auth(json!({"api_key": agent.api_key.clone(), "session_type": "ROBOT"}))
         .on("error", |err, _| {
             async move { eprintln!("Error: {:#?}", err) }.boxed()
         });
@@ -43,7 +47,9 @@ async fn main_normal(args: Args) -> Result<(), Box<dyn Error>> {
         let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
         socket = socket.on("new_job", move |payload: Payload, socket: Client| {
             let shared_jobs = Arc::clone(&shared_jobs);
-            async move { commands::launch_new_job(payload, socket, shared_jobs).await }.boxed()
+            let agent = agent.clone();
+            async move { commands::launch_new_job(payload, socket, agent, shared_jobs).await }
+                .boxed()
         })
     }
 
@@ -57,11 +63,15 @@ async fn main_normal(args: Args) -> Result<(), Box<dyn Error>> {
     }
     {
         let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
-        socket = socket.on("message_to_robot", move |payload: Payload, socket: Client| {
-            info!("Start tunnel request");
-            let shared_jobs = Arc::clone(&shared_jobs);
-            async move { commands::message_to_robot(payload, socket, shared_jobs).await }.boxed()
-        })
+        socket = socket.on(
+            "message_to_robot",
+            move |payload: Payload, socket: Client| {
+                info!("Start tunnel request");
+                let shared_jobs = Arc::clone(&shared_jobs);
+                async move { commands::message_to_robot(payload, socket, shared_jobs).await }
+                    .boxed()
+            },
+        )
     }
     let socket = socket.connect().await.expect("Connection failed");
 

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::info;
 
+use crate::agent;
 use crate::store;
 
 mod docker;
@@ -20,9 +21,9 @@ pub struct StartTunnelReq {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageToRobot{
+pub struct MessageToRobot {
     pub job_id: String,
-    pub content: String 
+    pub content: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -42,12 +43,17 @@ pub struct RobotJob {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RobotStartTunnelResponse{
+pub struct RobotStartTunnelResponse {
     is_ok: bool,
-    error: Option<String>
+    error: Option<String>,
 }
 
-pub async fn launch_new_job(payload: Payload, socket: Client, jobs: store::Jobs) {
+pub async fn launch_new_job(
+    payload: Payload,
+    socket: Client,
+    agent: agent::Agent,
+    jobs: store::Jobs,
+) {
     match payload {
         Payload::String(str) => {
             let robot_job: RobotJob = serde_json::from_str(&str).unwrap();
@@ -63,7 +69,12 @@ pub async fn launch_new_job(payload: Payload, socket: Client, jobs: store::Jobs)
                         robot_job.status.clone(),
                     );
                     let shared_jobs = Arc::clone(&jobs);
-                    tokio::spawn(docker::execute_launch(socket, robot_job, shared_jobs));
+                    tokio::spawn(docker::execute_launch(
+                        socket,
+                        robot_job,
+                        agent,
+                        shared_jobs,
+                    ));
                 }
                 _ => {}
             }
@@ -91,9 +102,9 @@ pub async fn start_tunnel_messanger(
 }
 
 pub async fn start_tunnel(payload: Payload, socket: Client, jobs: store::Jobs) {
-    let mut ack_result = RobotStartTunnelResponse{
+    let mut ack_result = RobotStartTunnelResponse {
         is_ok: false,
-        error: None
+        error: None,
     };
     match payload {
         Payload::String(str) => {
@@ -130,7 +141,6 @@ pub async fn start_tunnel(payload: Payload, socket: Client, jobs: store::Jobs) {
     };
 }
 
-
 pub async fn message_to_robot(payload: Payload, socket: Client, jobs: store::Jobs) {
     match payload {
         Payload::String(str) => {
@@ -141,7 +151,9 @@ pub async fn message_to_robot(payload: Payload, socket: Client, jobs: store::Job
 
             match job_manager.get_job_or_none(&message.job_id) {
                 Some(job) => {
-                    if let Some(channel) = job_manager.get_channel_to_job_tx_by_job_id(&message.job_id){
+                    if let Some(channel) =
+                        job_manager.get_channel_to_job_tx_by_job_id(&message.job_id)
+                    {
                         channel.send(message.content).unwrap();
                     };
                 }

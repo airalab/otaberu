@@ -76,11 +76,12 @@ impl JobManager {
             None => None,
         }
     }
-    pub fn get_channel_to_job_tx_by_job_id(&self, job_id: &String) -> Option<broadcast::Sender<String>>{
+    pub fn get_channel_to_job_tx_by_job_id(
+        &self,
+        job_id: &String,
+    ) -> Option<broadcast::Sender<String>> {
         match self.data.get(job_id) {
-            Some(job) => {
-                Some(job.channel_to_job_tx.clone())
-            },
+            Some(job) => Some(job.channel_to_job_tx.clone()),
             None => None,
         }
     }
