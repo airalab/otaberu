@@ -1,0 +1,18 @@
+{
+  "robots": [
+    {
+      "robot_id": "device-0",
+      "robot_peer_id": "12D3KooWKnY2J5CFny3Ef8abndmg9U4gAkndUDPM4oMP7yVbftBK",
+      "name": "spot",
+      "tags": [],
+      "interfaces": []
+    },
+    {
+      "robot_id": "device-1",
+      "robot_peer_id": "12D3KooWK8ogtRq7DXD21ji9nwkTgCfuz6AYU9dys8GrH7weC2AC",
+      "name": "jetson-1",
+      "tags": [],
+      "interfaces": []
+    }
+  ]
+}

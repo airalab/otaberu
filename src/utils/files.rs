@@ -1,10 +1,8 @@
-use reqwest;
 use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::error;
 use tracing::info;
-use walkdir;
 
 fn get_home_dir() -> String {
     match env::var_os("HOME") {
@@ -33,7 +31,7 @@ pub fn get_files_in_directory_recursively(path: &str) -> Result<Vec<PathBuf>, wa
     let mut result_files: Vec<PathBuf> = Vec::new();
     for entry in walkdir::WalkDir::new(path) {
         match entry {
-            Ok(entry) => match (entry.metadata()) {
+            Ok(entry) => match entry.metadata() {
                 Ok(md) => {
                     if md.is_file() {
                         result_files.push(entry.path().to_path_buf());

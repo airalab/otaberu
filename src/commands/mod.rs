@@ -1,6 +1,5 @@
-use futures_util::future::err;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 
 use rust_socketio::{asynchronous::Client, Payload};
 
@@ -114,7 +113,7 @@ pub async fn start_tunnel(payload: Payload, socket: Client, jobs: store::Jobs) {
             let mut job_manager = jobs.lock().unwrap();
 
             match job_manager.get_job_or_none(&start_tunnel_request.job_id) {
-                Some(job) => {
+                Some(_job) => {
                     job_manager.create_job_tunnel(
                         &start_tunnel_request.job_id,
                         start_tunnel_request.client_id.clone(),
@@ -141,16 +140,16 @@ pub async fn start_tunnel(payload: Payload, socket: Client, jobs: store::Jobs) {
     };
 }
 
-pub async fn message_to_robot(payload: Payload, socket: Client, jobs: store::Jobs) {
+pub async fn message_to_robot(payload: Payload, _socket: Client, jobs: store::Jobs) {
     match payload {
         Payload::String(str) => {
             info!("Message to robot request");
             let message: MessageToRobot = serde_json::from_str(&str).unwrap();
             info!("Message to robot: {:?}", message);
-            let mut job_manager = jobs.lock().unwrap();
+            let job_manager = jobs.lock().unwrap();
 
             match job_manager.get_job_or_none(&message.job_id) {
-                Some(job) => {
+                Some(_job) => {
                     if let Some(channel) =
                         job_manager.get_channel_to_job_tx_by_job_id(&message.job_id)
                     {

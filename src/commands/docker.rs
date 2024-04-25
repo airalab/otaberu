@@ -1,15 +1,10 @@
-use bollard;
 use bollard::Docker;
 use rust_socketio::asynchronous::Client;
 
 use futures_util::{StreamExt, TryStreamExt};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use tokio;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc;
 
-use std;
 use tracing::{error, info};
 
 use serde::{Deserialize, Serialize};
@@ -17,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent;
 use crate::{
     commands::{RobotJob, RobotJobResult},
-    store::{JobManager, Jobs},
+    store::Jobs,
     utils::files::{
         create_job_data_dir, get_files_in_directory_recursively, get_job_data_path,
         get_merklebot_data_path, upload_content,
@@ -153,7 +148,7 @@ impl DockerLaunch {
         let mut concatenated_logs: String = String::new();
 
         match &self.args.custom_cmd {
-            Some(custom_cmd) => {
+            Some(_custom_cmd) => {
                 let exec = docker
                     .create_exec(
                         &id,

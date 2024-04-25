@@ -6,12 +6,10 @@ use bollard::exec::{CreateExecOptions, ResizeExecOptions, StartExecResults};
 use bollard::image::CreateImageOptions;
 use futures_util::{StreamExt, TryStreamExt};
 
-use std::io::{stdout, Read, Write};
 use std::time::Duration;
 #[cfg(not(windows))]
-use termion::raw::IntoRawMode;
 #[cfg(not(windows))]
-use termion::{async_stdin, terminal_size};
+use termion::terminal_size;
 use tokio::io::AsyncWriteExt;
 use tokio::task::spawn;
 use tokio::time::sleep;
@@ -21,7 +19,7 @@ use tracing::info;
 
 const IMAGE: &str = "alpine:3";
 
-pub async fn main_docker_tty(args: Args) -> Result<(), Box<dyn Error>> {
+pub async fn main_docker_tty(_args: Args) -> Result<(), Box<dyn Error>> {
     let docker = Docker::connect_with_socket_defaults().unwrap();
 
     #[cfg(not(windows))]

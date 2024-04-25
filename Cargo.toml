@@ -17,13 +17,18 @@ futures-util = "0.3.30"
 rust_socketio = { version = "0.4.4", features = ["async"]}
 serde = "1.0.193"
 serde_json = "1.0.108"
-tokio = { version = "1.35.1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.35.1", features = ["rt-multi-thread", "macros", "full", "io-util"] }
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-openssl = { version = "0.10", features = ["vendored"] }
 
 termion = "3.0.0"
 walkdir = "2.4.0"
 reqwest = { version = "0.11.24", features = ["multipart"] }
+tracing-test = "0.2.4"
+libp2p = { version = "0.53.2", features = ["tokio", "mdns", "gossipsub", "macros", "tcp", "yamux", "noise", "quic"]}
+futures = "0.3.30"
+base64 = "0.22.0"
+libp2p-identity = { version="0.2.8", features=["peerid"]}
+openssl = { version = "0.10", features = ["vendored"] }
 
 
