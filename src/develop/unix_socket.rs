@@ -2,11 +2,11 @@ use crate::store::Message;
 use crate::store::{Robots, RobotsManager};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
+use std::sync::{Arc, Mutex};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
 use tokio::sync::broadcast;
 use tracing::{error, info};
-use std::sync::{Arc, Mutex};
 
 const SOCKET_PATH: &str = "merklebot.socket";
 
@@ -18,7 +18,7 @@ pub struct SocketServer {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SocketCommand {
     action: String,
-    content: Option<String>
+    content: Option<String>,
 }
 
 impl SocketServer {
@@ -38,7 +38,7 @@ impl SocketServer {
         &mut self,
         from_message_tx: broadcast::Sender<String>,
         to_message_tx: broadcast::Sender<String>,
-        robots: Robots
+        robots: Robots,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         info!("Starting server");
         match self.create_listener().await {
@@ -79,7 +79,7 @@ async fn handle_stream(
     stream: UnixStream,
     mut to_message_rx: broadcast::Receiver<String>,
     from_message_tx: broadcast::Sender<String>,
-    robots: Robots
+    robots: Robots,
 ) -> Result<(), Box<dyn Error>> {
     stream.readable().await?;
     let mut data = vec![0; 1024];
@@ -105,41 +105,45 @@ async fn handle_stream(
                 let robots_manager = robots.lock().unwrap();
                 let robots_text = robots_manager.clone().get_robots_json();
                 info!("robots: {}", robots_text);
-                match stream.try_write(&robots_text.into_bytes()){
-                    Ok(_)=>{},
-                    Err(_)=>{error!("can't write /robots result to unix socket")}
-                }
-            }
-            if command.action == "/send_message"{
-               match command.content{
-                    Some(message_content)=>{
-                        let _ = from_message_tx.send(serde_json::to_string(&Message::new(message_content, None, None))?); 
-                        stream.writable().await?;
-                        stream.try_write(b"{\"ok\":true}")?;
-
-                    },
-                    None=>{}
-               }
-            }
-
-            if command.action == "/subscribe_messages"{
-                info!("/subscribe_messages request");
-                    loop{
-                        info!("waiting message...");
-                        match to_message_rx.recv().await{
-                            Ok(msg)=>{
-                                let message = serde_json::from_str::<Message>(&&msg)?;
-                                info!("socket received libp2p message: {:?}", message);
-                                stream.writable().await?;
-                                stream.try_write(message.content.as_bytes())?;
-                            }
-                            Err(_)=>{
-                                error!("error while socket receiving libp2p message");
-                            }
-                        }
-                        
+                match stream.try_write(&robots_text.into_bytes()) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        error!("can't write /robots result to unix socket")
                     }
                 }
+            }
+            if command.action == "/send_message" {
+                match command.content {
+                    Some(message_content) => {
+                        let _ = from_message_tx.send(serde_json::to_string(&Message::new(
+                            message_content,
+                            None,
+                            None,
+                        ))?);
+                        stream.writable().await?;
+                        stream.try_write(b"{\"ok\":true}")?;
+                    }
+                    None => {}
+                }
+            }
+
+            if command.action == "/subscribe_messages" {
+                info!("/subscribe_messages request");
+                loop {
+                    info!("waiting message...");
+                    match to_message_rx.recv().await {
+                        Ok(msg) => {
+                            let message = serde_json::from_str::<Message>(&&msg)?;
+                            info!("socket received libp2p message: {:?}", message);
+                            stream.writable().await?;
+                            stream.try_write(message.content.as_bytes())?;
+                        }
+                        Err(_) => {
+                            error!("error while socket receiving libp2p message");
+                        }
+                    }
+                }
+            }
         }
         Err(_) => {}
     }

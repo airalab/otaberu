@@ -3,3 +3,7 @@ debug/
 
 .idea
 .vscode
+.DS_Store
+
+merklebot.key
+

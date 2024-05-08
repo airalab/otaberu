@@ -1,6 +1,8 @@
 use crate::cli::Args;
+use crate::store::Config;
 use crate::store::Message;
-use crate::store::{Robots, RobotsManager};
+use crate::store::Robots;
+
 use futures::stream::StreamExt;
 use libp2p::{
     gossipsub, mdns, noise,
@@ -15,11 +17,6 @@ use tokio::sync::broadcast;
 use tokio::{io, select};
 use tracing::{error, info};
 
-use base64::{engine::general_purpose, Engine as _};
-use std::net::Ipv4Addr;
-use libp2p::multiaddr::{Multiaddr, Protocol};
-
-
 #[derive(NetworkBehaviour)]
 struct MyBehaviour {
     gossipsub: gossipsub::Behaviour,
@@ -27,28 +24,14 @@ struct MyBehaviour {
 }
 
 async fn start(
-    key: &mut str,
+    identity: libp2p::identity::ed25519::Keypair,
     to_message_tx: broadcast::Sender<String>,
     from_message_tx: broadcast::Sender<String>,
-    robots: Robots
+    robots: Robots,
 ) -> Result<(), Box<dyn Error>> {
-    let mut identity = libp2p::identity::ed25519::Keypair::generate();
-    let encoded_key = general_purpose::STANDARD.encode(&identity.to_bytes().to_vec()); 
-    info!("key: {:?}", identity.to_bytes());
-    info!("encoded_key: {}", encoded_key);
     let public_key: libp2p::identity::PublicKey = identity.public().into();
     info!("PeerId: {:?}", public_key.to_peer_id());
-    let decoded_key: &mut[u8] = &mut general_purpose::STANDARD.decode(key)?;
-    info!("decoded key: {:?}", decoded_key);
-    match libp2p::identity::ed25519::Keypair::try_from_bytes(decoded_key){
-        Ok(parsed_identity)=>{identity = parsed_identity},
-        Err(e)=>{
-            error!("Can't parse keypair {:?} \n Starting with random keypair", e);
-        }
-    
-    }
 
-    
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(identity.clone().into())
         .with_tokio()
         .with_tcp(
@@ -102,10 +85,10 @@ async fn start(
             msg = from_message_rx.recv()=>match msg{
                 Ok(msg)=>{
                     let mut message = serde_json::from_str::<Message>(&&msg)?;
-                    message.from = Some(std::str::from_utf8(&identity.public().to_bytes())?.to_string()); 
-                    
+                    message.from = Some(std::str::from_utf8(&identity.public().to_bytes())?.to_string());
+
                     info!("libp2p received socket message: {:?}", message);
-                    
+
                     if let Err(e) = swarm
                         .behaviour_mut().gossipsub
                         .publish(topic.clone(), serde_json::to_string(&message)?.as_bytes()) {
@@ -142,7 +125,7 @@ async fn start(
                     message_id: id,
                     message,
                 })) => {
-                    
+
                     let _ = to_message_tx.send(String::from_utf8_lossy(&message.data).to_string());
                     println!(
                         "Got message: '{}' with id: {id} from peer: {peer_id}",
@@ -159,14 +142,12 @@ async fn start(
 }
 
 pub async fn main_libp2p(
-    args: Args,
+    config: Config,
     to_message_tx: broadcast::Sender<String>,
     from_message_tx: broadcast::Sender<String>,
-    robots: Robots
+    robots: Robots,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let mut key = args.key.clone();
-
-    let _ = start(&mut key, to_message_tx, from_message_tx, robots).await;
+    let _ = start(config.identity, to_message_tx, from_message_tx, robots).await;
 
     Ok(())
 }

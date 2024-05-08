@@ -1,9 +1,14 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fs;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio::sync::broadcast;
-use tracing::{info, error};
+use tracing::info;
+
+use base64::{engine::general_purpose, Engine as _};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Tunnel {
     pub client_id: String,
@@ -100,10 +105,10 @@ pub struct Message {
     pub timestamp: u128,
     pub content: String,
     pub from: Option<String>,
-    pub to: Option<String>
+    pub to: Option<String>,
 }
 impl Message {
-    pub fn new(content: String, from:Option<String>, to: Option<String>) -> Self {
+    pub fn new(content: String, from: Option<String>, to: Option<String>) -> Self {
         let duration_since_epoch = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
@@ -113,71 +118,112 @@ impl Message {
             timestamp: timestamp_nanos,
             content,
             from,
-            to
+            to,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Robot{
+pub struct Robot {
     pub robot_id: String,
     pub robot_peer_id: String,
     pub name: String,
     pub tags: Vec<String>,
-    pub interfaces: Vec<RobotInterface>
-}
-
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RobotsConfig{
-    pub robots: Vec<Robot>
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RobotInterface{
-    pub ip4: String
+    pub interfaces: HashSet<RobotInterface>,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
-pub struct RobotsManager{
-   pub robots: HashMap<String, Robot> 
-
+pub struct RobotsConfig {
+    pub robots: Vec<Robot>,
 }
 
-impl RobotsManager{
-   pub fn add_robot(&mut self, robot: Robot){
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
+pub struct RobotInterface {
+    pub ip4: String,
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct RobotsManager {
+    pub robots: HashMap<String, Robot>,
+}
+
+impl RobotsManager {
+    pub fn add_robot(&mut self, robot: Robot) {
         info!("Adding robot: {:?}", robot);
         self.robots.insert(robot.robot_peer_id.clone(), robot);
-   }
+    }
 
-   pub fn read_robots_from_config(&mut self, config: String){
-        let robots_config: RobotsConfig = serde_json::from_str::<RobotsConfig>(&config).expect("wrong JSON");
-        for robot in robots_config.robots.iter(){
+    pub fn read_robots_from_config(&mut self, config: String) {
+        let robots_config: RobotsConfig =
+            serde_json::from_str::<RobotsConfig>(&config).expect("wrong JSON");
+        for robot in robots_config.robots.iter() {
             self.add_robot(robot.clone());
         }
-   }
+    }
 
-   pub fn add_interface_to_robot(&mut self, robot_peer_id: String, ip4: String){
-       info!("Adding interface {} = {}", robot_peer_id, ip4);
-        match self.robots.get_mut(&robot_peer_id){
-            Some(robot)=>{
-                robot.interfaces.push(RobotInterface{ip4})
-            },
-            None =>{}
+    pub fn add_interface_to_robot(&mut self, robot_peer_id: String, ip4: String) {
+        info!("Adding interface {} = {}", robot_peer_id, ip4);
+        match self.robots.get_mut(&robot_peer_id) {
+            Some(robot) => {
+                robot.interfaces.insert(RobotInterface { ip4 });
+            }
+            None => {}
         }
-   }
+    }
 
-   pub fn remove_interface_from_robot(&mut self, robot_peer_id: String, ip4: String){
-        
-   }
+    pub fn remove_interface_from_robot(&mut self, robot_peer_id: String, ip4: String) {}
 
-   pub fn get_robots_json(self)->String{
+    pub fn merge_update(&mut self, update_robots: RobotsConfig) {
+        for robot in update_robots.robots.iter() {
+            if !self.robots.contains_key(&robot.robot_peer_id) {
+                self.add_robot(robot.clone());
+            }
+        }
+    }
+
+    pub fn get_robots_json(self) -> String {
         serde_json::to_string(&self).unwrap()
-        
-   }
+    }
+}
 
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub identity: libp2p::identity::ed25519::Keypair,
+}
 
+impl Config {
+    pub fn generate() -> Self {
+        Self {
+            identity: libp2p::identity::ed25519::Keypair::generate(),
+        }
+    }
 
+    pub fn save_to_file(self: &Self, filepath: String) -> Result<(), Box<dyn Error>> {
+        let encoded_key = general_purpose::STANDARD.encode(&self.identity.to_bytes().to_vec());
+        fs::write(filepath, encoded_key)?;
+        Ok(())
+    }
+
+    pub fn get_public_key_encoded(self: &Self) -> String {
+        let public_key_encoded =
+            general_purpose::STANDARD.encode(&self.identity.public().to_bytes().to_vec());
+        public_key_encoded
+    }
+
+    pub fn _get_peer_id(self: &Self) -> String {
+        let public_key: libp2p::identity::PublicKey = self.identity.public().into();
+        let _peer_id = public_key.to_peer_id();
+        todo!()
+    }
+
+    pub fn load_from_file(filepath: String) -> Result<Self, Box<dyn Error>> {
+        let key = fs::read(filepath)?;
+        let decoded_key: &mut [u8] = &mut general_purpose::STANDARD.decode(key)?;
+        let parsed_identity = libp2p::identity::ed25519::Keypair::try_from_bytes(decoded_key)?;
+        Ok(Self {
+            identity: parsed_identity,
+        })
+    }
 }
 
 pub type Robots = Arc<Mutex<RobotsManager>>;

@@ -5,9 +5,7 @@ use clap::Parser;
 pub struct Args {
     #[arg(short, long)]
     pub api_key: String,
-    #[arg(short, long)]
-    pub key: String,
-    #[arg(short, long)]
+    #[arg(short, long, default_value = "http://robots.merklebot.com:8888")]
     pub robot_server_url: String,
     #[arg(short, long, default_value = "normal")]
     pub mode: String,

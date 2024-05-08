@@ -54,8 +54,8 @@ pub async fn launch_new_job(
     jobs: store::Jobs,
 ) {
     match payload {
-        Payload::String(str) => {
-            let robot_job: RobotJob = serde_json::from_str(&str).unwrap();
+        Payload::Text(str) => {
+            let robot_job: RobotJob = serde_json::from_value(str.first().unwrap().clone()).unwrap(); //serde_json::from_str(&str).unwrap();
             info!("{:?}", robot_job);
 
             match robot_job.job_type.as_str() {
@@ -78,7 +78,7 @@ pub async fn launch_new_job(
                 _ => {}
             }
         }
-        Payload::Binary(bin_data) => info!("{:?}", bin_data),
+        _ => {}
     };
 }
 
@@ -106,9 +106,10 @@ pub async fn start_tunnel(payload: Payload, socket: Client, jobs: store::Jobs) {
         error: None,
     };
     match payload {
-        Payload::String(str) => {
+        Payload::Text(str) => {
             info!("Start tunnel request");
-            let start_tunnel_request: StartTunnelReq = serde_json::from_str(&str).unwrap();
+            let start_tunnel_request: StartTunnelReq =
+                serde_json::from_value(str.first().unwrap().clone()).unwrap(); // serde_json::from_str(&str).unwrap();
             info!("Start tunnel: {:?}", start_tunnel_request);
             let mut job_manager = jobs.lock().unwrap();
 
@@ -136,15 +137,16 @@ pub async fn start_tunnel(payload: Payload, socket: Client, jobs: store::Jobs) {
                 }
             }
         }
-        Payload::Binary(bin_data) => info!("{:?}", bin_data),
+        _ => {}
     };
 }
 
 pub async fn message_to_robot(payload: Payload, _socket: Client, jobs: store::Jobs) {
     match payload {
-        Payload::String(str) => {
+        Payload::Text(str) => {
             info!("Message to robot request");
-            let message: MessageToRobot = serde_json::from_str(&str).unwrap();
+            let message: MessageToRobot =
+                serde_json::from_value(str.first().unwrap().clone()).unwrap();
             info!("Message to robot: {:?}", message);
             let job_manager = jobs.lock().unwrap();
 
@@ -161,6 +163,6 @@ pub async fn message_to_robot(payload: Payload, _socket: Client, jobs: store::Jo
                 }
             }
         }
-        Payload::Binary(bin_data) => info!("{:?}", bin_data),
+        _ => {}
     };
 }
