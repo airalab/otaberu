@@ -76,7 +76,7 @@ Interface for applications and containers on devices. It creates a `merklebot.so
 
 ## Feautures 
 
-### Docker Job running
+### Docker Job running via Platform
 
 With [platform](https://app.merklebot.com) or via [API](https://github.com/merklebot/mb-cli) some code wrapped in docker container could be executed as job.
 
@@ -130,6 +130,14 @@ The terminal could be reached in job status screen (OPEN TERMINAL).
 >**Note**
 >To end job, don't forget to send `exit`.
 
+### Docker Job running via CLI
+You can use CLI tool to interact with your agents. Currently, it is in development.
+Two functions are supported:
+
+1. Get robot states
+2. Send docker jobs
+
+Detailed information could be obtained [here](https://merklebot.notion.site/CLI-Job-Deployment-bb47bdc56f08479ca1756be3fd17c3e5). 
 
 ### Devices discovery
 
@@ -185,7 +193,7 @@ pprint.pprint(local_robots()) # prints json with found devices
  
 ### Libp2p messaging 
 
-If sending some text messages is more than enough for your group of devices, you could use internal massages of agent based on libp2p messaging. To use it, you'll need a robot group config like in previous section.
+Agents can exchange data using libp2p messaging protocol. Therefore, you won't need to worry about addressing between your robots. To use it, you'll need a robot group config like in previous section.
 
 To send message, send JSON `{"action": "/send_message", "content": "TEXT_OF_MESSAGE"}` to  `merklebot.socket`
 
