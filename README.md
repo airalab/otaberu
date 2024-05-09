@@ -78,7 +78,7 @@ Interface for applications and containers on devices. It creates a `merklebot.so
 
 ### Docker Job running
 
-With [platform](app.merklbot.com) or via [API](https://github.com/merklebot/mb-cli) some code wrapped in docker container could be executed as job.
+With [platform](https://app.merklebot.com) or via [API](https://github.com/merklebot/mb-cli) some code wrapped in docker container could be executed as job.
 
 
 ![Docker Job Screen](docs/assets/Docker%20Job.png)
