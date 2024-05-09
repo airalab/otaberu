@@ -2,12 +2,36 @@
 
 ## Roadmap
 
-- [ ] auto restart and system service launch
+- [X] auto restart and system service launch
 - [ ] config on the platform 
 - [ ] tui for agent state monitoring
 - [ ] key based auth
 - [ ] autonomous config update
 
+## Installation and run
+### You can run agent directly from terminal
+1. Manually [download latest release](https://github.com/merklebot/robot-agent/releases) of agent for your system
+2. Make agent executable
+```bash
+chmod +x robot-agent-...
+```
+3. Run agent with ``api-key`` (run only with -k parameter if do not need platform)
+
+```bash
+./robot-agent-... -a <API_KEY> -r http://robots.merklebot.com:8888 -k <BASE_64_OF_ED25519>
+```
+
+### Run agent as systemd service
+Use easy to run script:
+```bash
+curl -s https://app.merklebot.com/install.sh | bash -s <API_KEY>
+```
+The copy of script could be found at [this repository](https://github.com/merklebot/robot-agent/blob/main/install.sh)
+
+To stop agent
+```bash
+systemctl disable merklebot 
+```
 
 ## Modules
 The agent consists of 4 main modules:
@@ -200,10 +224,5 @@ def subscribe_messages():
 ```
 
 
-## Example usage
-To run agent:
-```bash
-./robot-agent -a <API_KEY> -r http://robots.merklebot.com:8888 -k <BASE_64_OF_ED25519>
-```
 
 
