@@ -4,6 +4,6 @@ debug/
 .idea
 .vscode
 .DS_Store
-
+*.key
 merklebot.key
 

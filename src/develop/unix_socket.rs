@@ -8,8 +8,6 @@ use tokio::select;
 use tokio::sync::broadcast;
 use tracing::{error, info};
 
-const SOCKET_PATH: &str = "merklebot.socket";
-
 #[derive(Default)]
 pub struct SocketServer {
     listener: Option<UnixListener>,
@@ -22,14 +20,14 @@ struct SocketCommand {
 }
 
 impl SocketServer {
-    async fn create_listener(&mut self) -> Result<(), Box<dyn Error>> {
+    async fn create_listener(&mut self, socket_filename:String) -> Result<(), Box<dyn Error>> {
         info!("creating listener");
-        if std::fs::metadata(SOCKET_PATH).is_ok() {
+        if std::fs::metadata(socket_filename.clone()).is_ok() {
             info!("A socket is already present. Deleting...");
-            std::fs::remove_file(SOCKET_PATH)?;
+            std::fs::remove_file(socket_filename.clone())?;
         }
 
-        self.listener = Some(UnixListener::bind(SOCKET_PATH)?);
+        self.listener = Some(UnixListener::bind(socket_filename)?);
         info!("listener created");
         Ok(())
     }
@@ -39,9 +37,10 @@ impl SocketServer {
         from_message_tx: broadcast::Sender<String>,
         to_message_tx: broadcast::Sender<String>,
         robots: Robots,
+        socket_filename: String,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         info!("Starting server");
-        match self.create_listener().await {
+        match self.create_listener(socket_filename).await {
             Ok(_) => {}
             Err(_) => {}
         }

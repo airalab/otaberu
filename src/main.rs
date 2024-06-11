@@ -97,22 +97,21 @@ async fn main_normal(
             async move {}.boxed()
         })
     }
-    let _socket = socket.connect().await.expect("Connection failed");
+    let _socket = socket.connect().await?;
 
     sleep(Duration::from_secs(10));
     loop {
         info!("me request");
         let _res = _socket
             .emit("me", json!({}))
-            .await
-            .expect("Server unreachable");
+            .await;
         sleep(Duration::from_secs(60));
     }
 }
 
-pub fn generate_key_file() -> store::Config {
+pub fn generate_key_file(key_filename: String) -> store::Config {
     let config = store::Config::generate();
-    let _ = config.save_to_file(String::from("merklebot.key"));
+    let _ = config.save_to_file(key_filename);
     info!("Generated new key and saved it to merklebot.key");
 
     config
@@ -132,7 +131,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut config: store::Config = store::Config::generate();
-    let config_load_res = store::Config::load_from_file(String::from("merklebot.key"));
+    let config_load_res = store::Config::load_from_file(args.key_filename.clone());
     match config_load_res {
         Ok(loaded_config) => config = loaded_config,
         Err(..) => {
@@ -148,7 +147,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 robots_manager.read_robots_from_config(contents);
             }
             Err(_) => {
-                config = generate_key_file();
+                config = generate_key_file(args.key_filename.clone());
             }
         }
     }
@@ -160,6 +159,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let to_message_tx_socket = to_message_tx.clone();
     let from_message_tx_socket = from_message_tx.clone();
     let unix_socket_robots = Arc::clone(&robots);
+    let unix_socket_filename = args.socket_filename.clone();
     let _unix_socket_thread = tokio::spawn(async move {
         info!("Start unix socket server");
         socket_server
@@ -167,6 +167,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 from_message_tx_socket,
                 to_message_tx_socket,
                 unix_socket_robots,
+                unix_socket_filename
             )
             .await
     });
@@ -188,11 +189,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     //}
 
     let _ = main_normal(main_args, main_config, main_robots).await;
-    Ok(())
+    
 
-    //loop {
-    //    tokio::time::sleep(Duration::from_secs(1));
-    //}
+    loop {
+        tokio::time::sleep(Duration::from_secs(1));
+    }
 }
 
 #[cfg(test)]
