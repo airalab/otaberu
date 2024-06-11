@@ -48,21 +48,16 @@ impl SocketServer {
             Some(listener) => {
                 info!("Server started");
                 loop {
-                    select! {
-                        _ = async {
-                        match listener.accept().await{
-                            Ok(listener_res) => {
-                                let(stream, _addr) = listener_res;
-                                info!("new client");
-                                let stream_robots = Arc::clone(&robots);
-                                handle_stream(stream, to_message_tx.subscribe(), from_message_tx.clone(), stream_robots).await;
-                            }
-                            Err(_e) => {
-                                // error
-                            }
+                    match listener.accept().await{
+                        Ok(listener_res) => {
+                            let(stream, _addr) = listener_res;
+                            info!("new client");
+                            let stream_robots = Arc::clone(&robots);
+                            handle_stream(stream, to_message_tx.subscribe(), from_message_tx.clone(), stream_robots).await;
                         }
-
-                        }=>{}
+                        Err(_e) => {
+                            // error
+                        }
                     }
                 }
             }
@@ -114,11 +109,13 @@ async fn handle_stream(
             if command.action == "/send_message" {
                 match command.content {
                     Some(message_content) => {
+
                         let _ = from_message_tx.send(serde_json::to_string(&Message::new(
                             message_content,
                             None,
                             None,
                         ))?);
+                        info!("Sent from unix socket to libp2p");
                         stream.writable().await?;
                         stream.try_write(b"{\"ok\":true}")?;
                     }
