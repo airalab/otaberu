@@ -77,15 +77,14 @@ async fn start(
     swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
     let mut from_message_rx = from_message_tx.subscribe();
-
     // Kick it off
     loop {
         select! {
 
             msg = from_message_rx.recv()=>match msg{
                 Ok(msg)=>{
-                    let mut message = serde_json::from_str::<Message>(&&msg)?;
-                    message.from = Some(std::str::from_utf8(&identity.public().to_bytes())?.to_string());
+                    let mut message = serde_json::from_str::<Message>(&msg)?;
+                    // message.from = Some(std::str::from_utf8(&identity.public().to_bytes())?.to_string());
 
                     info!("libp2p received socket message: {:?}", message);
 
