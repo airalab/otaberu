@@ -1,10 +1,9 @@
 use crate::store::Message;
-use crate::store::{Robots, RobotsManager};
+use crate::store::{Robots};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::select;
 use tokio::sync::broadcast;
 use tracing::{error, info};
 
@@ -40,24 +39,17 @@ impl SocketServer {
         socket_filename: String,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         info!("Starting server");
-        match self.create_listener(socket_filename).await {
-            Ok(_) => {}
-            Err(_) => {}
-        }
+        if (self.create_listener(socket_filename).await).is_ok(){};
+
         match &self.listener {
             Some(listener) => {
                 info!("Server started");
                 loop {
-                    match listener.accept().await{
-                        Ok(listener_res) => {
-                            let(stream, _addr) = listener_res;
-                            info!("new client");
-                            let stream_robots = Arc::clone(&robots);
-                            handle_stream(stream, to_message_tx.subscribe(), from_message_tx.clone(), stream_robots).await;
-                        }
-                        Err(_e) => {
-                            // error
-                        }
+                    if let Ok(listener_res) = listener.accept().await{
+                        let(stream, _addr) = listener_res;
+                        info!("new client");
+                        let stream_robots = Arc::clone(&robots);
+                        let _ = handle_stream(stream, to_message_tx.subscribe(), from_message_tx.clone(), stream_robots).await;
                     }
                 }
             }
@@ -77,13 +69,12 @@ async fn handle_stream(
 ) -> Result<(), Box<dyn Error>> {
     stream.readable().await?;
     let mut data = vec![0; 1024];
-    match stream.try_read(&mut data) {
-        Ok(n) => {
+    if let Ok(n) = stream.try_read(&mut data) {
             info!("read {} bytes", n);
             info!("{:?}", data);
             let message = std::str::from_utf8(&data[..n])?;
             info!("message: {}", message);
-            let command = serde_json::from_str::<SocketCommand>(&message).unwrap();
+            let command = serde_json::from_str::<SocketCommand>(message).unwrap();
             info!("command: {:?}", command);
             if command.action == "/me" {
                 info!("/me request");
@@ -107,9 +98,7 @@ async fn handle_stream(
                 }
             }
             if command.action == "/send_message" {
-                match command.content {
-                    Some(message_content) => {
-
+                if let Some(message_content) = command.content {
                         let _ = from_message_tx.send(serde_json::to_string(&Message::new(
                             message_content,
                             None,
@@ -118,8 +107,6 @@ async fn handle_stream(
                         info!("Sent from unix socket to libp2p");
                         stream.writable().await?;
                         stream.try_write(b"{\"ok\":true}")?;
-                    }
-                    None => {}
                 }
             }
 
@@ -129,7 +116,7 @@ async fn handle_stream(
                     info!("waiting message...");
                     match to_message_rx.recv().await {
                         Ok(msg) => {
-                            let message = serde_json::from_str::<Message>(&&msg)?;
+                            let message = serde_json::from_str::<Message>(&msg)?;
                             info!("socket received libp2p message: {:?}", message);
                             stream.writable().await?;
                             stream.try_write(message.content.as_bytes())?;
@@ -140,8 +127,6 @@ async fn handle_stream(
                     }
                 }
             }
-        }
-        Err(_) => {}
     }
     Ok(())
 }

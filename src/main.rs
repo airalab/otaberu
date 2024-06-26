@@ -190,10 +190,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let _ = main_normal(main_args, main_config, main_robots).await;
     
-
-    loop {
-        tokio::time::sleep(Duration::from_secs(1));
-    }
+    Ok(())
 }
 
 #[cfg(test)]

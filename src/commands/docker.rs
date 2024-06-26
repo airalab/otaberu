@@ -94,8 +94,7 @@ impl DockerLaunch {
             volumes.push(format!("{}:{}", volume_pair.key, volume_pair.value))
         }
 
-        match self.args.store_data {
-            Some(true) => {
+        if let Some(true) = self.args.store_data {
                 // 1. create folder for the job
                 let create_job_dir_res = create_job_data_dir(&robot_job.id);
                 match create_job_dir_res {
@@ -108,8 +107,6 @@ impl DockerLaunch {
                         error!("Couldn't create shared dir for job {}", robot_job.id);
                     }
                 }
-            }
-            _ => {}
         }
 
         let mut config = bollard::container::Config::<&str> {
@@ -248,8 +245,7 @@ impl DockerLaunch {
         };
         let job_data_path = get_job_data_path(&robot_job.id);
 
-        match &self.args.store_data {
-            Some(true) => {
+        if let Some(true) = &self.args.store_data {
                 match get_files_in_directory_recursively(&job_data_path) {
                     //TODO: change to path
                     Ok(paths) => {
@@ -271,8 +267,6 @@ impl DockerLaunch {
                         error!("Can't get resulting paths");
                     }
                 }
-            }
-            _ => {}
         }
         Ok(robot_job_result)
     }

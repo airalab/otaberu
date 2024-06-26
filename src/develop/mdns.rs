@@ -1,4 +1,3 @@
-use crate::cli::Args;
 use crate::store::Config;
 use crate::store::Message;
 use crate::store::Robots;
@@ -83,7 +82,7 @@ async fn start(
 
             msg = from_message_rx.recv()=>match msg{
                 Ok(msg)=>{
-                    let mut message = serde_json::from_str::<Message>(&msg)?;
+                    let message = serde_json::from_str::<Message>(&msg)?;
                     // message.from = Some(std::str::from_utf8(&identity.public().to_bytes())?.to_string());
 
                     info!("libp2p received socket message: {:?}", message);
