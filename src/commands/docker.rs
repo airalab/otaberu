@@ -177,9 +177,16 @@ impl DockerLaunch {
                             tokio::task::spawn(async move {
                                 let mut channel_to_job_rx = channel_to_job_tx.subscribe();
                                 loop {
-                                    let data = channel_to_job_rx.recv().await.unwrap();
-                                    for byte in data.as_bytes().iter() {
-                                        input.write(&[*byte]).await.ok();
+                                    let channel_message = channel_to_job_rx.recv().await.unwrap();
+                                    match channel_message{
+                                        crate::store::ChannelMessage::TerminalMessage(data)=>{
+                                            for byte in data.as_bytes().iter(){ 
+                                                input.write_all(&[*byte]).await.ok();
+                                            }
+                                        },
+                                        crate::store::ChannelMessage::ArchiveMessage { file_name, path }=>{
+                                            // TODO process archive data upload
+                                        }
                                     }
                                 }
                             });

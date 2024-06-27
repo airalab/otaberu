@@ -14,13 +14,22 @@ pub struct Tunnel {
     pub client_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ChannelMessage{
+    TerminalMessage(String),
+    ArchiveMessage{
+        file_name: String,
+        path: String
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct JobProcess {
     pub job_id: String,
     pub job_type: String,
     pub status: String,
     pub channel_tx: Option<broadcast::Sender<String>>,
-    pub channel_to_job_tx: broadcast::Sender<String>,
+    pub channel_to_job_tx: broadcast::Sender<ChannelMessage>,
     pub tunnel: Option<Tunnel>,
 }
 
@@ -31,7 +40,7 @@ pub struct JobManager {
 
 impl JobManager {
     pub fn new_job(&mut self, job_id: String, job_type: String, status: String) {
-        let (channel_to_job_tx, _channel_to_job_rx) = broadcast::channel::<String>(100);
+        let (channel_to_job_tx, _channel_to_job_rx) = broadcast::channel::<ChannelMessage>(100);
 
         self.data.insert(
             job_id.clone(),
@@ -84,7 +93,7 @@ impl JobManager {
     pub fn get_channel_to_job_tx_by_job_id(
         &self,
         job_id: &String,
-    ) -> Option<broadcast::Sender<String>> {
+    ) -> Option<broadcast::Sender<ChannelMessage>> {
         match self.data.get(job_id) {
             Some(job) => Some(job.channel_to_job_tx.clone()),
             None => None,

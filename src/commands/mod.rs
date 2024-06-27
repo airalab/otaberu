@@ -150,17 +150,12 @@ pub async fn message_to_robot(payload: Payload, _socket: Client, jobs: store::Jo
             info!("Message to robot: {:?}", message);
             let job_manager = jobs.lock().unwrap();
 
-            match job_manager.get_job_or_none(&message.job_id) {
-                Some(_job) => {
+            if let Some(_job) = job_manager.get_job_or_none(&message.job_id) {
                     if let Some(channel) =
                         job_manager.get_channel_to_job_tx_by_job_id(&message.job_id)
                     {
-                        channel.send(message.content).unwrap();
-                    };
-                }
-                None => {
-                    //todo: socket res
-                }
+                        channel.send(store::ChannelMessage::TerminalMessage(message.content)).unwrap();
+                    }
             }
         }
         _ => {}
