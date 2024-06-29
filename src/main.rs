@@ -183,10 +183,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let main_args = args.clone();
     let main_config = config.clone();
     let main_robots = Arc::clone(&robots);
-    //let _main_thread = tokio::spawn(async move {
-    //   info!("Start main logic");
-    //    main_normal(main_args, main_config).await
-    //}
 
     let _ = main_normal(main_args, main_config, main_robots).await;
     
