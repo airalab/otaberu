@@ -9,6 +9,8 @@ use tracing::{error, info};
 
 use serde::{Deserialize, Serialize};
 
+use base64::{engine::general_purpose, Engine as _};
+
 use crate::agent;
 use crate::{
     commands::{RobotJob, RobotJobResult},
@@ -19,7 +21,12 @@ use crate::{
     },
 };
 
-pub async fn execute_launch(socket: Client, robot_job: RobotJob, agent: agent::Agent, jobs: Jobs) {
+pub async fn execute_launch(
+    socket: Option<Client>,
+    robot_job: RobotJob,
+    agent: agent::Agent,
+    jobs: Jobs,
+) {
     let args = serde_json::from_str::<DockerLaunchArgs>(&robot_job.args).unwrap();
     info!("launching docker job {:?}", args);
     let docker_launch = DockerLaunch { args };
@@ -37,9 +44,14 @@ pub async fn execute_launch(socket: Client, robot_job: RobotJob, agent: agent::A
             }
         }
     };
-    let _ = socket
-        .emit("job_done", serde_json::json!(robot_job_result))
-        .await;
+    match socket {
+        Some(socket) => {
+            let _ = socket
+                .emit("job_done", serde_json::json!(robot_job_result))
+                .await;
+        }
+        None => {}
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -94,22 +106,19 @@ impl DockerLaunch {
             volumes.push(format!("{}:{}", volume_pair.key, volume_pair.value))
         }
 
-        match self.args.store_data {
-            Some(true) => {
-                // 1. create folder for the job
-                let create_job_dir_res = create_job_data_dir(&robot_job.id);
-                match create_job_dir_res {
-                    Ok(path) => {
-                        info!("Sharing dir {}", path);
-                        // 2. Share folder as volume
-                        volumes.push(format!("{}:{}", path, "/merklebot/job_data/"));
-                    }
-                    _ => {
-                        error!("Couldn't create shared dir for job {}", robot_job.id);
-                    }
+        if let Some(true) = self.args.store_data {
+            // 1. create folder for the job
+            let create_job_dir_res = create_job_data_dir(&robot_job.id);
+            match create_job_dir_res {
+                Ok(path) => {
+                    info!("Sharing dir {}", path);
+                    // 2. Share folder as volume
+                    volumes.push(format!("{}:{}", path, "/merklebot/job_data/"));
+                }
+                _ => {
+                    error!("Couldn't create shared dir for job {}", robot_job.id);
                 }
             }
-            _ => {}
         }
 
         let mut config = bollard::container::Config::<&str> {
@@ -146,7 +155,7 @@ impl DockerLaunch {
         docker.start_container::<String>(&id, None).await?;
 
         let mut concatenated_logs: String = String::new();
-
+        let container_id = id.clone();
         match &self.args.custom_cmd {
             Some(_custom_cmd) => {
                 let exec = docker
@@ -163,7 +172,7 @@ impl DockerLaunch {
                     )
                     .await?
                     .id;
-
+                let docker_client = docker.clone();
                 #[cfg(not(windows))]
                 if let bollard::exec::StartExecResults::Attached {
                     mut output,
@@ -174,15 +183,57 @@ impl DockerLaunch {
                     {
                         let shared_jobs = Arc::clone(&jobs);
                         let job_manager = shared_jobs.lock().unwrap();
-                        let channel_to_job_tx =
-                            job_manager.get_channel_to_job_tx_by_job_id(&robot_job.id);
+                        let channel_to_job_tx = job_manager.get_channel_to_job(&robot_job.id);
                         if let Some(channel_to_job_tx) = channel_to_job_tx {
                             tokio::task::spawn(async move {
                                 let mut channel_to_job_rx = channel_to_job_tx.subscribe();
                                 loop {
-                                    let data = channel_to_job_rx.recv().await.unwrap();
-                                    for byte in data.as_bytes().iter() {
-                                        input.write(&[*byte]).await.ok();
+                                    let channel_message = channel_to_job_rx.recv().await.unwrap();
+                                    match channel_message {
+                                        crate::store::ChannelMessageToJob::TerminalMessage(
+                                            data,
+                                        ) => {
+                                            for byte in data.as_bytes().iter() {
+                                                input.write_all(&[*byte]).await.ok();
+                                            }
+                                        }
+                                        crate::store::ChannelMessageToJob::ArchiveMessage {
+                                            encoded_tar,
+                                            path,
+                                        } => {
+                                            info!("encoded tar: {}", encoded_tar);
+                                            if let Ok(decoded_data) =
+                                                general_purpose::STANDARD.decode(encoded_tar)
+                                            {
+                                                info!("decoded data: {:?}", decoded_data);
+                                                let options = Some(
+                                                    bollard::container::UploadToContainerOptions {
+                                                        path,
+                                                        ..Default::default()
+                                                    },
+                                                );
+                                                match docker_client
+                                                    .upload_to_container(
+                                                        &container_id,
+                                                        options,
+                                                        decoded_data.into(),
+                                                    )
+                                                    .await
+                                                {
+                                                    Ok(_) => {
+                                                        info!("Tar uploaded")
+                                                    }
+                                                    Err(_) => {
+                                                        info!("Error while tar uplaod")
+                                                    }
+                                                }
+                                            } else {
+                                                info!("Error while decoded tar");
+                                            }
+                                        }
+                                        crate::store::ChannelMessageToJob::ArchiveRequest {
+                                            path,
+                                        } => {}
                                     }
                                 }
                             });
@@ -202,8 +253,11 @@ impl DockerLaunch {
                         let shared_jobs = Arc::clone(&jobs);
                         while let Some(Ok(output)) = output.next().await {
                             let job_manager = shared_jobs.lock().unwrap();
-                            if let Some(tx) = job_manager.get_channel_by_job_id(&robot_job.id) {
-                                tx.send(output.to_string()).unwrap();
+                            if let Some(tx) = job_manager.get_channel_from_job(&robot_job.id) {
+                                tx.send(crate::store::ChannelMessageFromJob::TerminalMessage(
+                                    output.to_string(),
+                                ))
+                                .unwrap();
                             }
 
                             info!("{:?}", output.into_bytes());
@@ -233,7 +287,7 @@ impl DockerLaunch {
 
         docker
             .remove_container(
-                &id,
+                &id.clone(),
                 Some(bollard::container::RemoveContainerOptions {
                     force: true,
                     ..Default::default()
@@ -248,31 +302,28 @@ impl DockerLaunch {
         };
         let job_data_path = get_job_data_path(&robot_job.id);
 
-        match &self.args.store_data {
-            Some(true) => {
-                match get_files_in_directory_recursively(&job_data_path) {
-                    //TODO: change to path
-                    Ok(paths) => {
-                        info!("{:?}", paths);
-                        for path in paths {
-                            let path_str = path.as_path().display().to_string();
-                            let key = path_str.replace(&get_merklebot_data_path(), "");
-                            upload_content(
-                                agent.robot_server_url.clone(),
-                                path,
-                                key,
-                                robot_job.id.clone(),
-                                agent.api_key.clone(),
-                            )
-                            .await;
-                        }
-                    }
-                    _ => {
-                        error!("Can't get resulting paths");
+        if let Some(true) = &self.args.store_data {
+            match get_files_in_directory_recursively(&job_data_path) {
+                //TODO: change to path
+                Ok(paths) => {
+                    info!("{:?}", paths);
+                    for path in paths {
+                        let path_str = path.as_path().display().to_string();
+                        let key = path_str.replace(&get_merklebot_data_path(), "");
+                        upload_content(
+                            agent.robot_server_url.clone(),
+                            path,
+                            key,
+                            robot_job.id.clone(),
+                            agent.api_key.clone(),
+                        )
+                        .await;
                     }
                 }
+                _ => {
+                    error!("Can't get resulting paths");
+                }
             }
-            _ => {}
         }
         Ok(robot_job_result)
     }

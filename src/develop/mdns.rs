@@ -1,14 +1,18 @@
-use crate::cli::Args;
 use crate::store::Config;
 use crate::store::Message;
+use crate::store::RobotRole;
 use crate::store::Robots;
 
 use futures::stream::StreamExt;
 use libp2p::{
-    gossipsub, mdns, noise,
+    gossipsub, identify, kad,
+    kad::store::MemoryStore,
+    mdns, noise,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
+
+use libp2p::Multiaddr;
 use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
 use std::hash::{Hash, Hasher};
@@ -19,12 +23,16 @@ use tracing::{error, info};
 
 #[derive(NetworkBehaviour)]
 struct MyBehaviour {
+    identify: identify::Behaviour,
     gossipsub: gossipsub::Behaviour,
     mdns: mdns::tokio::Behaviour,
+    kademlia: kad::Behaviour<MemoryStore>,
 }
 
 async fn start(
     identity: libp2p::identity::ed25519::Keypair,
+    libp2p_port: u16,
+    bootstrap_addrs: Vec<Multiaddr>,
     to_message_tx: broadcast::Sender<String>,
     from_message_tx: broadcast::Sender<String>,
     robots: Robots,
@@ -64,7 +72,21 @@ async fn start(
 
             let mdns =
                 mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
-            Ok(MyBehaviour { gossipsub, mdns })
+
+            let store = MemoryStore::new(key.public().to_peer_id());
+
+            let kademlia = kad::Behaviour::new(key.public().to_peer_id(), store);
+
+            let identify_config =
+                identify::Config::new("/agent/connection/1.0.0".to_string(), key.clone().public());
+            let identify = identify::Behaviour::new(identify_config);
+
+            Ok(MyBehaviour {
+                gossipsub,
+                mdns,
+                kademlia,
+                identify,
+            })
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
@@ -74,16 +96,25 @@ async fn start(
     // subscribes to our topic
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
-    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+    swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{}", libp2p_port).parse()?)?;
+
+    // Botstrap Kadmelia
+    if bootstrap_addrs.len() > 0 {
+        let bootaddr = bootstrap_addrs.first().unwrap();
+        swarm.dial(bootaddr.clone())?;
+    }
 
     let mut from_message_rx = from_message_tx.subscribe();
     // Kick it off
     loop {
         select! {
-
             msg = from_message_rx.recv()=>match msg{
                 Ok(msg)=>{
                     let mut message = serde_json::from_str::<Message>(&msg)?;
+                    {
+                        let robots_manager = robots.lock().unwrap();
+                        message.from = Some(robots_manager.self_peer_id.clone());
+                    }
                     // message.from = Some(std::str::from_utf8(&identity.public().to_bytes())?.to_string());
 
                     info!("libp2p received socket message: {:?}", message);
@@ -100,40 +131,102 @@ async fn start(
                 }
             },
             event = swarm.select_next_some() => match event {
-                SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
-                    for (peer_id, multiaddr) in list {
-                        let ip4: String  = (&multiaddr.to_string().split("/").collect::<Vec<_>>()[2]).to_string();
-                        info!("{:?}", ip4);
-                        {
-                            let mut robots_manager = robots.lock().unwrap();
-                            info!("Adding interface");
-                            robots_manager.add_interface_to_robot(peer_id.to_string(), ip4);
-                        }
-                        println!("mDNS discovered a new peer: {peer_id}, {multiaddr}");
-                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
-                    }
-                },
-                SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
-                    for (peer_id, _multiaddr) in list {
-                        println!("mDNS discover peer has expired: {peer_id}");
-                        swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
-                    }
-                },
-                SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                    propagation_source: peer_id,
-                    message_id: id,
-                    message,
-                })) => {
+                SwarmEvent::Behaviour(behaviour)=> {
+                    match behaviour {
+                        MyBehaviourEvent::Mdns(mdns::Event::Discovered(list)) => {
+                            for (peer_id, multiaddr) in list {
+                                let ip4: String  = (&multiaddr.to_string().split("/").collect::<Vec<_>>()[2]).to_string();
+                                info!("{:?}", ip4);
+                                {
+                                    let mut robots_manager = robots.lock().unwrap();
+                                    info!("Adding interface");
+                                    robots_manager.add_interface_to_robot(peer_id.to_string(), ip4);
+                                }
+                                println!("mDNS discovered a new peer: {peer_id}, {multiaddr}");
+                                swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                            }
+                        },
+                        MyBehaviourEvent::Mdns(mdns::Event::Expired(list)) => {
+                            for (peer_id, _multiaddr) in list {
+                                println!("mDNS discover peer has expired: {peer_id}");
+                                swarm.behaviour_mut().gossipsub.remove_explicit_peer(&peer_id);
+                            }
+                        },
+                        MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                            propagation_source: peer_id,
+                            message_id: id,
+                            message,
+                        }) => {
+                            println!(
+                                "Got message: '{}' with id: {id} from peer: {peer_id}",
+                                String::from_utf8_lossy(&message.data),
+                            );
+                            let message_string = String::from_utf8_lossy(&message.data).to_string();
+                            let message_data = serde_json::from_str::<Message>(&message_string)?;
 
-                    let _ = to_message_tx.send(String::from_utf8_lossy(&message.data).to_string());
-                    println!(
-                        "Got message: '{}' with id: {id} from peer: {peer_id}",
-                        String::from_utf8_lossy(&message.data),
-                    )
-                }
+                            {
+                                let robots_manager = robots.lock().unwrap();
+                                if message_data.to.unwrap_or("".to_string())==robots_manager.self_peer_id{
+                                    match message_data.from{
+                                        Some(sender_peer_id)=>{
+                                            {
+                                                let role = robots_manager.get_role(sender_peer_id);
+                                                info!("role: {:?}", role);
+                                                if matches!(role, RobotRole::OrganizationRobot){
+                                                    let _ = to_message_tx.send(message_string);
+                                                }
+                                            }
+
+                                        },
+                                        None=>{
+
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        MyBehaviourEvent::Kademlia(event)=>{
+                           match event{
+                                kad::Event::ModeChanged { new_mode } => info!("KadEvent:ModeChanged: {new_mode}"),
+                                kad::Event::RoutablePeer { peer, address } => info!("KadEvent:RoutablePeer: {peer} | {address}"),
+                                kad::Event::PendingRoutablePeer { peer, address } => info!("KadEvent:PendingRoutablePeer: {peer} | {address}"),
+                                kad::Event::InboundRequest { request } => info!("KadEvent:InboundRequest: {request:?}"),
+                                kad::Event::RoutingUpdated {
+                                    peer,
+                                    is_new_peer,
+                                    addresses,
+                                    bucket_range,
+                                    old_peer } => {
+                                        info!("KadEvent:RoutingUpdated: {peer} | IsNewPeer? {is_new_peer} | {addresses:?} | {bucket_range:?} | OldPeer: {old_peer:?}");
+                                    },
+                                kad::Event::OutboundQueryProgressed {
+                                    id,
+                                    result,
+                                    stats,
+                                    step } => {
+
+                                    info!("KadEvent:OutboundQueryProgressed: ID: {id:?} | Result: {result:?} | Stats: {stats:?} | Step: {step:?}")
+                                },
+                                _=>{}
+                           }
+                        },
+                        _=>{}
+                    }
+                },
+
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Local node is listening on {address}");
-                }
+                },
+                SwarmEvent::ConnectionEstablished{
+                    peer_id,
+                    connection_id,
+                    endpoint,
+                    num_established,
+                    concurrent_dial_errors,
+                    established_in
+                }=>{
+                    info!("ConnectionEstablished: {peer_id} | {connection_id} | {endpoint:?} | {num_established} | {concurrent_dial_errors:?} | {established_in:?}");
+                },
                 _ => {}
             }
         }
@@ -146,20 +239,15 @@ pub async fn main_libp2p(
     from_message_tx: broadcast::Sender<String>,
     robots: Robots,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let _ = start(config.identity, to_message_tx, from_message_tx, robots).await;
+    let _ = start(
+        config.identity,
+        config.libp2p_port,
+        config.bootstrap_addrs,
+        to_message_tx,
+        from_message_tx,
+        robots,
+    )
+    .await;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tracing_test::traced_test;
-
-    #[traced_test]
-    #[tokio::test]
-    async fn launch_libp2p() {
-        let s = start().await;
-        assert!(s.is_ok());
-    }
 }

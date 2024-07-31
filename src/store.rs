@@ -1,3 +1,4 @@
+use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -9,9 +10,40 @@ use tracing::info;
 
 use base64::{engine::general_purpose, Engine as _};
 
+use crate::commands::RobotJob;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Tunnel {
     pub client_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ChannelMessageToJob {
+    TerminalMessage(String),
+    ArchiveMessage { encoded_tar: String, path: String },
+    ArchiveRequest { path: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ChannelMessageFromJob {
+    TerminalMessage(String),
+    ArchiveMessage { encoded_tar: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum MessageContent {
+    CustomMessage(serde_json::Value),
+    JobMessage(serde_json::Value),
+    StartTunnelReq {
+        job_id: String,
+        peer_id: String,
+    },
+    TunnelResponseMessage {
+        job_id: String,
+        message: ChannelMessageFromJob,
+    },
+    StartJob(RobotJob),
 }
 
 #[derive(Debug, Clone)]
@@ -19,8 +51,8 @@ pub struct JobProcess {
     pub job_id: String,
     pub job_type: String,
     pub status: String,
-    pub channel_tx: Option<broadcast::Sender<String>>,
-    pub channel_to_job_tx: broadcast::Sender<String>,
+    pub channel_tx: Option<broadcast::Sender<ChannelMessageFromJob>>,
+    pub channel_to_job_tx: broadcast::Sender<ChannelMessageToJob>,
     pub tunnel: Option<Tunnel>,
 }
 
@@ -31,7 +63,8 @@ pub struct JobManager {
 
 impl JobManager {
     pub fn new_job(&mut self, job_id: String, job_type: String, status: String) {
-        let (channel_to_job_tx, _channel_to_job_rx) = broadcast::channel::<String>(100);
+        let (channel_to_job_tx, _channel_to_job_rx) =
+            broadcast::channel::<ChannelMessageToJob>(100);
 
         self.data.insert(
             job_id.clone(),
@@ -63,7 +96,7 @@ impl JobManager {
 
     pub fn create_job_tunnel(&mut self, job_id: &String, client_id: String) {
         let process = self.data.get_mut(job_id);
-        let (tx, _rx) = broadcast::channel::<String>(100);
+        let (tx, _rx) = broadcast::channel::<ChannelMessageFromJob>(100);
         match process {
             Some(process) => {
                 process.tunnel = Some(Tunnel { client_id });
@@ -72,7 +105,10 @@ impl JobManager {
             None => {}
         }
     }
-    pub fn get_channel_by_job_id(&self, job_id: &String) -> Option<broadcast::Sender<String>> {
+    pub fn get_channel_from_job(
+        &self,
+        job_id: &String,
+    ) -> Option<broadcast::Sender<ChannelMessageFromJob>> {
         match self.data.get(job_id) {
             Some(job) => match &job.channel_tx {
                 Some(channel) => Some(channel.clone()),
@@ -81,10 +117,10 @@ impl JobManager {
             None => None,
         }
     }
-    pub fn get_channel_to_job_tx_by_job_id(
+    pub fn get_channel_to_job(
         &self,
         job_id: &String,
-    ) -> Option<broadcast::Sender<String>> {
+    ) -> Option<broadcast::Sender<ChannelMessageToJob>> {
         match self.data.get(job_id) {
             Some(job) => Some(job.channel_to_job_tx.clone()),
             None => None,
@@ -103,17 +139,16 @@ impl MessageManager {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub timestamp: u128,
-    pub content: String,
+    pub content: MessageContent,
     pub from: Option<String>,
     pub to: Option<String>,
 }
 impl Message {
-    pub fn new(content: String, from: Option<String>, to: Option<String>) -> Self {
+    pub fn new(content: MessageContent, from: Option<String>, to: Option<String>) -> Self {
         let duration_since_epoch = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
         let timestamp_nanos = duration_since_epoch.as_nanos();
-
         Self {
             timestamp: timestamp_nanos,
             content,
@@ -122,7 +157,13 @@ impl Message {
         }
     }
 }
-
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RobotRole {
+    Current,
+    OrganizationRobot,
+    OrganizationAdmin,
+    Unknown,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Robot {
     pub robot_id: String,
@@ -144,16 +185,17 @@ pub struct RobotInterface {
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct RobotsManager {
+    pub self_peer_id: String,
     pub robots: HashMap<String, Robot>,
-    pub peer_id_to_ip: HashMap<String, String>
+    pub peer_id_to_ip: HashMap<String, String>,
 }
 
 impl RobotsManager {
     pub fn add_robot(&mut self, robot: Robot) {
-        info!("Adding robot: {:?}", robot);
-        self.robots.insert(robot.robot_peer_id.clone(), robot.clone());
-        if let Some(ip4)= self.peer_id_to_ip.get(&robot.robot_peer_id){
-                self.add_interface_to_robot(robot.robot_peer_id, ip4.to_string());
+        self.robots
+            .insert(robot.robot_peer_id.clone(), robot.clone());
+        if let Some(ip4) = self.peer_id_to_ip.get(&robot.robot_peer_id) {
+            self.add_interface_to_robot(robot.robot_peer_id, ip4.to_string());
         }
     }
 
@@ -178,6 +220,15 @@ impl RobotsManager {
         }
     }
 
+    pub fn get_role(&self, peer_id: String) -> RobotRole {
+        for robot_peer_id in self.robots.keys() {
+            if robot_peer_id == &peer_id {
+                return RobotRole::OrganizationRobot;
+            }
+        }
+        return RobotRole::Unknown;
+    }
+
     pub fn remove_interface_from_robot(&mut self, robot_peer_id: String, ip4: String) {}
 
     pub fn merge_update(&mut self, update_robots: RobotsConfig) {
@@ -196,12 +247,16 @@ impl RobotsManager {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub identity: libp2p::identity::ed25519::Keypair,
+    pub bootstrap_addrs: Vec<Multiaddr>,
+    pub libp2p_port: u16,
 }
 
 impl Config {
     pub fn generate() -> Self {
         Self {
             identity: libp2p::identity::ed25519::Keypair::generate(),
+            bootstrap_addrs: Vec::new(),
+            libp2p_port: 0,
         }
     }
 
@@ -217,10 +272,10 @@ impl Config {
         public_key_encoded
     }
 
-    pub fn _get_peer_id(self: &Self) -> String {
+    pub fn get_peer_id(self: &Self) -> String {
         let public_key: libp2p::identity::PublicKey = self.identity.public().into();
-        let _peer_id = public_key.to_peer_id();
-        todo!()
+        let peer_id = public_key.to_peer_id();
+        return peer_id.to_string();
     }
 
     pub fn load_from_file(filepath: String) -> Result<Self, Box<dyn Error>> {
@@ -229,7 +284,17 @@ impl Config {
         let parsed_identity = libp2p::identity::ed25519::Keypair::try_from_bytes(decoded_key)?;
         Ok(Self {
             identity: parsed_identity,
+            bootstrap_addrs: Vec::new(),
+            libp2p_port: 0,
         })
+    }
+
+    pub fn add_bootstrap_addr(&mut self, addr: Multiaddr) {
+        self.bootstrap_addrs.push(addr);
+    }
+
+    pub fn set_libp2p_port(&mut self, port: u16) {
+        self.libp2p_port = port;
     }
 }
 
