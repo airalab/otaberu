@@ -1,21 +1,25 @@
 use std::error::Error;
 
+use commands::{MessageToRobot, RobotJob};
 use futures_util::FutureExt;
 
+use libp2p::Multiaddr;
 use rust_socketio::{
     asynchronous::{Client, ClientBuilder},
     Payload,
 };
 use serde_json::json;
-use std::thread::sleep;
 use std::time::Duration;
 
 use cli::Args;
 
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber::FmtSubscriber;
 
+use crate::store::Message;
+use crate::store::MessageContent;
 use std::sync::{Arc, Mutex};
+use tokio::select;
 use tokio::sync::broadcast;
 
 use agent::{Agent, AgentBuilder};
@@ -33,6 +37,8 @@ async fn main_normal(
     args: Args,
     config: store::Config,
     robots: store::Robots,
+    to_message_tx: broadcast::Sender<String>,
+    from_message_tx: broadcast::Sender<String>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let agent: Agent = AgentBuilder::default()
         .api_key(args.api_key)
@@ -42,18 +48,25 @@ async fn main_normal(
     let jobs: store::Jobs = Arc::new(Mutex::new(store::JobManager::default()));
 
     let mut socket = ClientBuilder::new(args.robot_server_url)
-        .auth(json!({"api_key": agent.api_key.clone(), "public_key": config.get_public_key_encoded(), "session_type": "ROBOT"}))
+        .auth(json!({"api_key": agent.clone().api_key, "public_key": config.get_public_key_encoded(), "session_type": "ROBOT"}))
         .on("error", |err, _| {
             async move { eprintln!("Error: {:#?}", err) }.boxed()
         });
 
     {
         let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
+        let shared_agent = agent.clone();
         socket = socket.on("new_job", move |payload: Payload, socket: Client| {
             let shared_jobs = Arc::clone(&shared_jobs);
-            let agent = agent.clone();
-            async move { commands::launch_new_job(payload, socket, agent, shared_jobs).await }
-                .boxed()
+            let agent = shared_agent.clone();
+            async move {
+                if let Payload::Text(str) = payload {
+                    let robot_job: RobotJob =
+                        serde_json::from_value(str.first().unwrap().clone()).unwrap(); //serde_json::from_str(&str).unwrap();
+                    commands::launch_new_job(robot_job, Some(socket), agent, shared_jobs).await
+                }
+            }
+            .boxed()
         })
     }
 
@@ -62,18 +75,43 @@ async fn main_normal(
         socket = socket.on("start_tunnel", move |payload: Payload, socket: Client| {
             info!("Start tunnel request");
             let shared_jobs = Arc::clone(&shared_jobs);
-            async move { commands::start_tunnel(payload, socket, shared_jobs).await }.boxed()
+            async move {
+                if let Payload::Text(str) = payload {
+                    let start_tunnel_request: commands::StartTunnelReq =
+                        serde_json::from_value(str.first().unwrap().clone()).unwrap();
+                    commands::start_tunnel(
+                        commands::TunnnelClient::SocketClient {
+                            socket: socket,
+                            client_id: start_tunnel_request.client_id,
+                            job_id: start_tunnel_request.job_id.clone(),
+                        },
+                        start_tunnel_request.job_id,
+                        shared_jobs,
+                    )
+                    .await
+                }
+            }
+            .boxed()
         })
     }
     {
         let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
         socket = socket.on(
             "message_to_robot",
-            move |payload: Payload, socket: Client| {
+            move |payload: Payload, _socket: Client| {
                 info!("Message to robot request");
                 let shared_jobs = Arc::clone(&shared_jobs);
-                async move { commands::message_to_robot(payload, socket, shared_jobs).await }
-                    .boxed()
+                async move {
+                    match payload {
+                        Payload::Text(payload) => {
+                            let message: MessageToRobot =
+                                serde_json::from_value(payload.first().unwrap().clone()).unwrap();
+                            commands::message_to_robot(message, shared_jobs).await
+                        }
+                        _ => {}
+                    }
+                }
+                .boxed()
             },
         )
     }
@@ -98,14 +136,56 @@ async fn main_normal(
         })
     }
     let _socket = socket.connect().await?;
+    let mut to_message_rx = to_message_tx.subscribe();
 
-    sleep(Duration::from_secs(10));
+    let _res = _socket.emit("me", json!({})).await;
+
+    let sleep = tokio::time::sleep(Duration::from_secs(5));
+    tokio::pin!(sleep);
+    let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
+
     loop {
-        info!("me request");
-        let _res = _socket
-            .emit("me", json!({}))
-            .await;
-        sleep(Duration::from_secs(60));
+        select! {
+            msg = to_message_rx.recv()=>match msg{
+                Ok(msg)=>{
+                    let message = serde_json::from_str::<Message>(&msg)?;
+                    match message.content{
+                        MessageContent::JobMessage(message_content) =>{
+                            info!("main got job message: {:?}", message_content);
+                            if let Ok(message) = serde_json::from_value::<MessageToRobot>(message_content){
+                                let shared_jobs = Arc::clone(&shared_jobs);
+                                commands::message_to_robot(message, shared_jobs).await
+                            }else{
+                                error!("Can't deserialize MessageToRobot");
+                            }
+                        },
+                        MessageContent::StartTunnelReq { job_id, peer_id }=>{
+                            let shared_jobs = Arc::clone(&shared_jobs);
+
+                            commands::start_tunnel(commands::TunnnelClient::RobotClient { peer_id: peer_id, from_robot_tx: from_message_tx.clone(), job_id: job_id.clone() }, job_id, shared_jobs).await
+                        },
+                        MessageContent::StartJob(robot_job)=>{
+                            info!("new job {:?}", robot_job);
+                            let shared_jobs = Arc::clone(&shared_jobs);
+                            let agent = agent.clone();
+                            commands::launch_new_job(robot_job, None, agent, shared_jobs).await;
+
+                        },
+                        _=>{}
+                    }
+                },
+                Err(_)=>{
+                    error!("error while socket receiving libp2p message");
+                }
+            },
+            () = &mut sleep => {
+                info!("me request");
+                let _res = _socket
+                    .emit("me", json!({}))
+                    .await;
+                sleep.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(60));
+            },
+        }
     }
 }
 
@@ -139,22 +219,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let robots: store::Robots = Arc::new(Mutex::new(store::RobotsManager::default()));
+    let robots: store::Robots = Arc::new(Mutex::new(store::RobotsManager {
+        self_peer_id: config.get_peer_id(),
+        ..Default::default()
+    }));
     {
         match std::fs::read_to_string("config.json") {
             Ok(contents) => {
                 let mut robots_manager = robots.lock().unwrap();
                 robots_manager.read_robots_from_config(contents);
             }
-            Err(_) => {
-                config = generate_key_file(args.key_filename.clone());
+            Err(_err) => {
+                error!("Error while reading robots list");
             }
         }
     }
 
-    let mut socket_server = SocketServer::default();
     let (to_message_tx, _to_message_rx) = broadcast::channel::<String>(16);
     let (from_message_tx, _from_message_rx) = broadcast::channel::<String>(16);
+
+    let mut socket_server = SocketServer::default();
 
     let to_message_tx_socket = to_message_tx.clone();
     let from_message_tx_socket = from_message_tx.clone();
@@ -167,25 +251,62 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 from_message_tx_socket,
                 to_message_tx_socket,
                 unix_socket_robots,
-                unix_socket_filename
+                unix_socket_filename,
             )
             .await
     });
 
+    let to_message_tx_libp2p = to_message_tx.clone();
+    let from_message_tx_libp2p = from_message_tx.clone();
+
     let libp2p_robots = Arc::clone(&robots);
-    let libp2p_config = config.clone();
+    let mut libp2p_config = config.clone();
+
+    match args.bootstrap_addr.clone() {
+        Some(addr) => {
+            let addr: Multiaddr = addr.parse().unwrap();
+            libp2p_config.add_bootstrap_addr(addr);
+        }
+        _ => {}
+    }
+
+    let libp2p_port = args.port_libp2p.parse::<u16>().unwrap();
+    libp2p_config.set_libp2p_port(libp2p_port);
+
     let _libp2p_thread = tokio::spawn(async move {
         info!("Start libp2p node");
-        develop::mdns::main_libp2p(libp2p_config, to_message_tx, from_message_tx, libp2p_robots)
-            .await
+        develop::mdns::main_libp2p(
+            libp2p_config,
+            to_message_tx_libp2p,
+            from_message_tx_libp2p,
+            libp2p_robots,
+        )
+        .await
     });
 
     let main_args = args.clone();
-    let main_config = config.clone();
+    let mut main_config = config.clone();
     let main_robots = Arc::clone(&robots);
 
-    let _ = main_normal(main_args, main_config, main_robots).await;
-    
+    //main_config.add_bootstrap_addr()
+
+    let to_message_tx_libp2p = to_message_tx.clone();
+    let from_message_tx_libp2p = from_message_tx.clone();
+
+    let _main_thread = tokio::spawn(async move {
+        main_normal(
+            main_args,
+            main_config,
+            main_robots,
+            to_message_tx_libp2p,
+            from_message_tx_libp2p,
+        )
+        .await;
+    });
+    loop {
+        tokio::time::sleep(Duration::from_secs(1));
+    }
+
     Ok(())
 }
 

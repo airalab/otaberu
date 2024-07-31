@@ -6,7 +6,7 @@ pub struct Args {
     #[arg(short, long)]
     pub api_key: String,
 
-    #[arg(short, long, default_value = "http://robots.merklebot.com:8888")]
+    #[arg(short, long, default_value = "https://robots.merklebot.com")]
     pub robot_server_url: String,
 
     #[arg(short, long, default_value = "normal")]
@@ -17,6 +17,12 @@ pub struct Args {
 
     #[arg(short, long, default_value = "merklebot.key")]
     pub key_filename: String,
+
+    #[arg(short, long)]
+    pub bootstrap_addr: Option<String>,
+
+    #[arg(short, long, default_value = "8765")]
+    pub port_libp2p: String,
 }
 
 pub fn get_args() -> Args {

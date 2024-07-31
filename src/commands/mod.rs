@@ -1,15 +1,18 @@
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-use rust_socketio::{asynchronous::Client, Payload};
+use rust_socketio::asynchronous::Client;
 
 use serde::{Deserialize, Serialize};
 
 use serde_json::json;
-use tracing::info;
+use tokio::sync::broadcast::Sender;
+use tracing::{error, info};
 
 use crate::agent;
 use crate::store;
+use crate::store::ChannelMessageFromJob;
+use crate::store::Message;
 
 mod docker;
 
@@ -22,7 +25,14 @@ pub struct StartTunnelReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageToRobot {
     pub job_id: String,
-    pub content: String,
+    pub content: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum MessageContent {
+    Terminal { stdin: String },
+    Archive { dest_path: String, data: String },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -46,118 +56,186 @@ pub struct RobotStartTunnelResponse {
     is_ok: bool,
     error: Option<String>,
 }
+pub enum TunnnelClient {
+    SocketClient {
+        socket: Client,
+        client_id: String,
+        job_id: String,
+    },
+    RobotClient {
+        peer_id: String,
+        from_robot_tx: Sender<String>,
+        job_id: String,
+    },
+}
 
 pub async fn launch_new_job(
-    payload: Payload,
-    socket: Client,
+    robot_job: RobotJob,
+    socket: Option<Client>,
     agent: agent::Agent,
     jobs: store::Jobs,
 ) {
-    match payload {
-        Payload::Text(str) => {
-            let robot_job: RobotJob = serde_json::from_value(str.first().unwrap().clone()).unwrap(); //serde_json::from_str(&str).unwrap();
-            info!("{:?}", robot_job);
+    info!("{:?}", robot_job);
 
-            match robot_job.job_type.as_str() {
-                "docker-container-launch" => {
-                    info!("container launch");
-                    let mut job_manager = jobs.lock().unwrap();
-                    job_manager.new_job(
-                        robot_job.id.clone(),
-                        robot_job.job_type.clone(),
-                        robot_job.status.clone(),
-                    );
-                    let shared_jobs = Arc::clone(&jobs);
-                    tokio::spawn(docker::execute_launch(
-                        socket,
-                        robot_job,
-                        agent,
-                        shared_jobs,
-                    ));
-                }
-                _ => {}
-            }
+    match robot_job.job_type.as_str() {
+        "docker-container-launch" => {
+            info!("container launch");
+            let mut job_manager = jobs.lock().unwrap();
+            job_manager.new_job(
+                robot_job.id.clone(),
+                robot_job.job_type.clone(),
+                robot_job.status.clone(),
+            );
+            let shared_jobs = Arc::clone(&jobs);
+            tokio::spawn(docker::execute_launch(
+                socket,
+                robot_job,
+                agent,
+                shared_jobs,
+            ));
         }
         _ => {}
-    };
+    }
 }
 
 pub async fn start_tunnel_messanger(
-    socket: Client,
-    tx: broadcast::Sender<String>,
-    client_id: String,
+    tx: broadcast::Sender<ChannelMessageFromJob>,
+    client: TunnnelClient,
 ) {
     let mut rx = tx.subscribe();
     loop {
         let data = rx.recv().await.unwrap();
-        info!("from docker: {}", data);
-        let _res: Result<(), rust_socketio::Error> = socket
-            .emit(
-                "message_to_client",
-                json!({"client_id": client_id, "content": data}),
-            )
-            .await;
+        let client = &client;
+        match client {
+            TunnnelClient::SocketClient {
+                socket,
+                client_id,
+                job_id: _,
+            } => match data {
+                ChannelMessageFromJob::TerminalMessage(stdout) => {
+                    info!("from docker: {}", stdout);
+                    let _res: Result<(), rust_socketio::Error> = socket
+                        .emit(
+                            "message_to_client",
+                            json!({"client_id": client_id, "content": {"stdout": stdout}}),
+                        )
+                        .await;
+                }
+                _ => {}
+            },
+            TunnnelClient::RobotClient {
+                peer_id,
+                from_robot_tx,
+                job_id,
+            } => {
+                match data {
+                    ChannelMessageFromJob::TerminalMessage(stdout) => {
+                        info!("sending stdout: {:?}", stdout);
+                        let _ = from_robot_tx.send(
+                            serde_json::to_string(&Message::new(
+                                store::MessageContent::TunnelResponseMessage {
+                                    job_id: job_id.clone(),
+                                    message: ChannelMessageFromJob::TerminalMessage(stdout),
+                                },
+                                None,
+                                Some(peer_id.clone()),
+                            ))
+                            .unwrap(),
+                        );
+
+                        // TODO send message
+                        // let _res: Result<(), rust_socketio::Error> = socket
+                        //     .emit(
+                        //         "message_to_client",
+                        //         json!({"client_id": client_id, "content": {"stdout": stdout}}),
+                        //     )
+                        //     .await;
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 }
 
-pub async fn start_tunnel(payload: Payload, socket: Client, jobs: store::Jobs) {
-    let mut ack_result = RobotStartTunnelResponse {
-        is_ok: false,
-        error: None,
-    };
-    match payload {
-        Payload::Text(str) => {
-            info!("Start tunnel request");
-            let start_tunnel_request: StartTunnelReq =
-                serde_json::from_value(str.first().unwrap().clone()).unwrap(); // serde_json::from_str(&str).unwrap();
-            info!("Start tunnel: {:?}", start_tunnel_request);
-            let mut job_manager = jobs.lock().unwrap();
+pub async fn start_tunnel(tunnel_client: TunnnelClient, job_id: String, jobs: store::Jobs) {
+    info!("Start tunnel request");
+    let mut job_manager = jobs.lock().unwrap();
 
-            match job_manager.get_job_or_none(&start_tunnel_request.job_id) {
-                Some(_job) => {
-                    job_manager.create_job_tunnel(
-                        &start_tunnel_request.job_id,
-                        start_tunnel_request.client_id.clone(),
-                    );
-                    if let Some(channel_tx) =
-                        job_manager.get_channel_by_job_id(&start_tunnel_request.job_id)
-                    {
-                        tokio::spawn(start_tunnel_messanger(
+    match job_manager.get_job_or_none(&job_id) {
+        Some(_job) => match tunnel_client {
+            TunnnelClient::SocketClient {
+                socket,
+                client_id,
+                job_id,
+            } => {
+                job_manager.create_job_tunnel(&job_id, client_id.clone());
+                if let Some(channel_tx) = job_manager.get_channel_from_job(&job_id) {
+                    tokio::spawn(start_tunnel_messanger(
+                        channel_tx.clone(),
+                        TunnnelClient::SocketClient {
                             socket,
-                            channel_tx.clone(),
-                            start_tunnel_request.client_id.clone(),
-                        ));
-                        ack_result.is_ok = true;
-                    } else {
-                        info!("no channel tx");
-                    }
-                }
-                None => {
-                    //todo: socket res
+                            client_id: client_id.clone(),
+                            job_id,
+                        },
+                    ));
+                } else {
+                    info!("no channel tx");
                 }
             }
+            TunnnelClient::RobotClient {
+                peer_id,
+                from_robot_tx,
+                job_id,
+            } => {
+                job_manager.create_job_tunnel(&job_id, peer_id.clone());
+                if let Some(channel_tx) = job_manager.get_channel_from_job(&job_id) {
+                    tokio::spawn(start_tunnel_messanger(
+                        channel_tx.clone(),
+                        TunnnelClient::RobotClient {
+                            peer_id,
+                            from_robot_tx,
+                            job_id,
+                        },
+                    ));
+                } else {
+                    info!("no channel tx");
+                }
+            }
+        },
+        None => {
+            //todo: socket res
         }
-        _ => {}
-    };
+    }
 }
 
-pub async fn message_to_robot(payload: Payload, _socket: Client, jobs: store::Jobs) {
-    match payload {
-        Payload::Text(str) => {
-            info!("Message to robot request");
-            let message: MessageToRobot =
-                serde_json::from_value(str.first().unwrap().clone()).unwrap();
-            info!("Message to robot: {:?}", message);
-            let job_manager = jobs.lock().unwrap();
+pub async fn message_to_robot(message: MessageToRobot, jobs: store::Jobs) {
+    info!("Message to robot request");
 
-            if let Some(_job) = job_manager.get_job_or_none(&message.job_id) {
-                    if let Some(channel) =
-                        job_manager.get_channel_to_job_tx_by_job_id(&message.job_id)
-                    {
-                        channel.send(store::ChannelMessage::TerminalMessage(message.content)).unwrap();
+    info!("Message to robot: {:?}", message);
+    let job_manager = jobs.lock().unwrap();
+
+    if let Some(_job) = job_manager.get_job_or_none(&message.job_id) {
+        if let Some(channel) = job_manager.get_channel_to_job(&message.job_id) {
+            if let Ok(content) = serde_json::from_value::<MessageContent>(message.content) {
+                match content {
+                    MessageContent::Terminal { stdin } => {
+                        channel
+                            .send(store::ChannelMessageToJob::TerminalMessage(stdin))
+                            .unwrap();
                     }
+                    MessageContent::Archive { dest_path, data } => {
+                        channel
+                            .send(store::ChannelMessageToJob::ArchiveMessage {
+                                encoded_tar: data,
+                                path: dest_path,
+                            })
+                            .unwrap();
+                    }
+                }
             }
         }
-        _ => {}
-    };
+    } else {
+        error!("no such job: {}", message.job_id);
+    }
 }
