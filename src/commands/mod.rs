@@ -137,7 +137,7 @@ pub async fn start_tunnel_messanger(
                                     job_id: job_id.clone(),
                                     message: ChannelMessageFromJob::TerminalMessage(stdout),
                                 },
-                                None,
+                                "".to_string(),
                                 Some(peer_id.clone()),
                             ))
                             .unwrap(),

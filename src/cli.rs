@@ -23,6 +23,9 @@ pub struct Args {
 
     #[arg(short, long, default_value = "8765")]
     pub port_libp2p: String,
+
+    #[arg(short, long)]
+    pub owner: Option<String>,
 }
 
 pub fn get_args() -> Args {
