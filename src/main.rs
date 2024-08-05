@@ -18,6 +18,8 @@ use tracing_subscriber::FmtSubscriber;
 
 use crate::store::Message;
 use crate::store::MessageContent;
+use crate::store::MessageRequest;
+use crate::store::MessageResponse;
 use std::sync::{Arc, Mutex};
 use tokio::select;
 use tokio::sync::broadcast;
@@ -170,6 +172,30 @@ async fn main_normal(
                             let agent = agent.clone();
                             commands::launch_new_job(robot_job, None, agent, shared_jobs).await;
 
+                        },
+                        MessageContent::MessageRequest(request)=>{
+                            let mut response_content:Option<MessageResponse> = None;
+                            match request{
+                                MessageRequest::ListJobs{}=>{
+                                    info!("ListJobs request");
+                                    let shared_jobs = Arc::clone(&shared_jobs);
+                                    let job_manager = shared_jobs.lock().unwrap();
+                                    let jobs = job_manager.get_jobs_info();
+                                    info!("jobs: {:?}", jobs);
+                                    response_content = Some(MessageResponse::ListJobs { jobs: jobs });
+                                },
+                                _=>{
+
+                                }
+                            }
+                            if let Some(message_response) =response_content{
+                                let message_content = MessageContent::MessageResponse(message_response);
+                                let _ = from_message_tx.send(serde_json::to_string(&Message::new(
+                                    message_content,
+                                    "".to_string(),
+                                    Some(message.from),
+                                ))?);
+                            }
                         },
                         _=>{}
                     }

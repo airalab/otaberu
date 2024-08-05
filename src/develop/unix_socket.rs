@@ -27,8 +27,8 @@ impl MessageQueue {
             let message_bytes = last_message.as_bytes();
 
             for stream in &mut self.subscribers {
-                if let Err(_) = stream.try_write(message_bytes) {
-                    error!("Can't write message to socket");
+                if let Err(err) = stream.try_write(message_bytes) {
+                    error!("Can't write message to socket {:?}", err);
                 }
             }
         }
@@ -167,7 +167,7 @@ async fn handle_stream(
                     if let Some(message_content) = command.content {
                         let _ = from_message_tx.send(serde_json::to_string(&Message::new(
                             message_content.content,
-                            None,
+                            "".to_string(),
                             Some(message_content.to),
                         ))?);
                         info!("Sent from unix socket to libp2p");
@@ -183,8 +183,9 @@ async fn handle_stream(
                     message_queue.lock().unwrap().add_subscriber(stream);
                 }
             }
-            Err(_err) => {
+            Err(err) => {
                 error!("Can't deserialize robot message");
+                error!("{:?}", err);
             }
         }
     }

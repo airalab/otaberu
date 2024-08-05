@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
+use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio::sync::broadcast;
@@ -31,9 +32,23 @@ pub enum ChannelMessageFromJob {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "request_type")]
+pub enum MessageRequest {
+    ListJobs {},
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "response_type")]
+pub enum MessageResponse {
+    ListJobs { jobs: Vec<JobProcessData> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum MessageContent {
     CustomMessage(serde_json::Value),
+    MessageResponse(MessageResponse),
+    MessageRequest(MessageRequest),
     JobMessage(serde_json::Value),
     StartTunnelReq {
         job_id: String,
@@ -44,6 +59,11 @@ pub enum MessageContent {
         message: ChannelMessageFromJob,
     },
     StartJob(RobotJob),
+    UpdateConfig {
+        config: serde_json::Value,
+        signer: String,
+        sign: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +74,23 @@ pub struct JobProcess {
     pub channel_tx: Option<broadcast::Sender<ChannelMessageFromJob>>,
     pub channel_to_job_tx: broadcast::Sender<ChannelMessageToJob>,
     pub tunnel: Option<Tunnel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobProcessData {
+    pub job_id: String,
+    pub job_type: String,
+    pub status: String,
+}
+
+impl From<JobProcess> for JobProcessData {
+    fn from(job_process: JobProcess) -> Self {
+        return Self {
+            job_id: job_process.job_id,
+            job_type: job_process.job_type,
+            status: job_process.status,
+        };
+    }
 }
 
 #[derive(Default, Debug)]
@@ -83,6 +120,9 @@ impl JobManager {
             Some(job) => Some(job.clone()),
             None => None,
         }
+    }
+    pub fn get_jobs_info(&self) -> Vec<JobProcessData> {
+        return self.data.clone().into_values().map(|x| x.into()).collect();
     }
     pub fn set_job_status(&mut self, job_id: String, status: String) {
         let process = self.data.get_mut(&job_id);
@@ -140,11 +180,11 @@ impl MessageManager {}
 pub struct Message {
     pub timestamp: u128,
     pub content: MessageContent,
-    pub from: Option<String>,
+    pub from: String,
     pub to: Option<String>,
 }
 impl Message {
-    pub fn new(content: MessageContent, from: Option<String>, to: Option<String>) -> Self {
+    pub fn new(content: MessageContent, from: String, to: Option<String>) -> Self {
         let duration_since_epoch = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();

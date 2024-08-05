@@ -113,7 +113,7 @@ async fn start(
                     let mut message = serde_json::from_str::<Message>(&msg)?;
                     {
                         let robots_manager = robots.lock().unwrap();
-                        message.from = Some(robots_manager.self_peer_id.clone());
+                        message.from = robots_manager.self_peer_id.clone();
                     }
                     // message.from = Some(std::str::from_utf8(&identity.public().to_bytes())?.to_string());
 
@@ -167,20 +167,10 @@ async fn start(
                             {
                                 let robots_manager = robots.lock().unwrap();
                                 if message_data.to.unwrap_or("".to_string())==robots_manager.self_peer_id{
-                                    match message_data.from{
-                                        Some(sender_peer_id)=>{
-                                            {
-                                                let role = robots_manager.get_role(sender_peer_id);
-                                                info!("role: {:?}", role);
-                                                if matches!(role, RobotRole::OrganizationRobot){
-                                                    let _ = to_message_tx.send(message_string);
-                                                }
-                                            }
-
-                                        },
-                                        None=>{
-
-                                        }
+                                    let role = robots_manager.get_role(message_data.from);
+                                    info!("role: {:?}", role);
+                                    if matches!(role, RobotRole::OrganizationRobot){
+                                        let _ = to_message_tx.send(message_string);
                                     }
                                 }
                             }
