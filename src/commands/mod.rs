@@ -76,16 +76,17 @@ pub async fn launch_new_job(
     jobs: store::Jobs,
 ) {
     info!("{:?}", robot_job);
+    let mut job_manager = jobs.lock().unwrap();
+    job_manager.new_job(
+        robot_job.id.clone(),
+        robot_job.job_type.clone(),
+        robot_job.status.clone(),
+    );
+    job_manager.set_job_status(robot_job.id.clone(), "processing".to_string());
 
     match robot_job.job_type.as_str() {
         "docker-container-launch" => {
             info!("container launch");
-            let mut job_manager = jobs.lock().unwrap();
-            job_manager.new_job(
-                robot_job.id.clone(),
-                robot_job.job_type.clone(),
-                robot_job.status.clone(),
-            );
             let shared_jobs = Arc::clone(&jobs);
             tokio::spawn(docker::execute_launch(
                 socket,

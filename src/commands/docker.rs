@@ -30,28 +30,37 @@ pub async fn execute_launch(
     let args = serde_json::from_str::<DockerLaunchArgs>(&robot_job.args).unwrap();
     info!("launching docker job {:?}", args);
     let docker_launch = DockerLaunch { args };
-    let robot_job_result = match docker_launch.execute(robot_job.clone(), agent, jobs).await {
-        Ok(result) => {
-            info!("job successfully executed");
-            result
-        }
-        Err(error) => {
-            error!("error {:?}", error);
-            RobotJobResult {
-                job_id: robot_job.id,
-                status: String::from("error"),
-                logs: error.to_string(),
+    {
+        let exec_jobs = Arc::clone(&jobs);
+        let robot_job_result = match docker_launch
+            .execute(robot_job.clone(), agent, exec_jobs)
+            .await
+        {
+            Ok(result) => {
+                info!("job successfully executed");
+                result
             }
-        }
-    };
-    match socket {
-        Some(socket) => {
-            let _ = socket
-                .emit("job_done", serde_json::json!(robot_job_result))
-                .await;
-        }
-        None => {}
+            Err(error) => {
+                error!("error {:?}", error);
+                RobotJobResult {
+                    job_id: robot_job.id,
+                    status: String::from("error"),
+                    logs: error.to_string(),
+                }
+            }
+        };
+        let mut job_manager = jobs.lock().unwrap();
+        job_manager.set_job_result(robot_job_result);
     }
+
+    // match socket {
+    //     Some(socket) => {
+    //         let _ = socket
+    //             .emit("job_done", serde_json::json!(robot_job_result))
+    //             .await;
+    //     }
+    //     None => {}
+    // }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]

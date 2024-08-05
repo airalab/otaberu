@@ -11,7 +11,7 @@ use tracing::info;
 
 use base64::{engine::general_purpose, Engine as _};
 
-use crate::commands::RobotJob;
+use crate::commands::{RobotJob, RobotJobResult};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Tunnel {
@@ -114,6 +114,15 @@ impl JobManager {
                 tunnel: None,
             },
         );
+    }
+    pub fn set_job_result(&mut self, reslut: RobotJobResult) {
+        let process = self.data.get_mut(&reslut.job_id);
+        match process {
+            Some(process) => {
+                self.set_job_status(reslut.job_id, reslut.status);
+            }
+            None => {}
+        }
     }
     pub fn get_job_or_none(&self, job_id: &String) -> Option<JobProcess> {
         match self.data.get(job_id) {
