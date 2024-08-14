@@ -9,7 +9,6 @@ use serde_json::json;
 use tokio::sync::broadcast::Sender;
 use tracing::{error, info};
 
-use crate::agent;
 use crate::store;
 use crate::store::ChannelMessageFromJob;
 use crate::store::Message;
@@ -69,12 +68,7 @@ pub enum TunnnelClient {
     },
 }
 
-pub async fn launch_new_job(
-    robot_job: RobotJob,
-    socket: Option<Client>,
-    agent: agent::Agent,
-    jobs: store::Jobs,
-) {
+pub async fn launch_new_job(robot_job: RobotJob, socket: Option<Client>, jobs: store::Jobs) {
     info!("{:?}", robot_job);
     let mut job_manager = jobs.lock().unwrap();
     job_manager.new_job(
@@ -88,12 +82,7 @@ pub async fn launch_new_job(
         "docker-container-launch" => {
             info!("container launch");
             let shared_jobs = Arc::clone(&jobs);
-            tokio::spawn(docker::execute_launch(
-                socket,
-                robot_job,
-                agent,
-                shared_jobs,
-            ));
+            tokio::spawn(docker::execute_launch(socket, robot_job, shared_jobs));
         }
         _ => {}
     }

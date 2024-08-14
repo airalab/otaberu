@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 
 use base64::{engine::general_purpose, Engine as _};
 
-use crate::agent;
 use crate::{
     commands::{RobotJob, RobotJobResult},
     store::Jobs,
@@ -21,21 +20,13 @@ use crate::{
     },
 };
 
-pub async fn execute_launch(
-    socket: Option<Client>,
-    robot_job: RobotJob,
-    agent: agent::Agent,
-    jobs: Jobs,
-) {
+pub async fn execute_launch(socket: Option<Client>, robot_job: RobotJob, jobs: Jobs) {
     let args = serde_json::from_str::<DockerLaunchArgs>(&robot_job.args).unwrap();
     info!("launching docker job {:?}", args);
     let docker_launch = DockerLaunch { args };
     {
         let exec_jobs = Arc::clone(&jobs);
-        let robot_job_result = match docker_launch
-            .execute(robot_job.clone(), agent, exec_jobs)
-            .await
-        {
+        let robot_job_result = match docker_launch.execute(robot_job.clone(), exec_jobs).await {
             Ok(result) => {
                 info!("job successfully executed");
                 result
@@ -90,7 +81,6 @@ impl DockerLaunch {
     pub async fn execute(
         &self,
         robot_job: RobotJob,
-        agent: agent::Agent,
         jobs: Jobs,
     ) -> Result<RobotJobResult, bollard::errors::Error> {
         info!("launching docker with image {}", self.args.image);
@@ -311,29 +301,29 @@ impl DockerLaunch {
         };
         let job_data_path = get_job_data_path(&robot_job.id);
 
-        if let Some(true) = &self.args.store_data {
-            match get_files_in_directory_recursively(&job_data_path) {
-                //TODO: change to path
-                Ok(paths) => {
-                    info!("{:?}", paths);
-                    for path in paths {
-                        let path_str = path.as_path().display().to_string();
-                        let key = path_str.replace(&get_merklebot_data_path(), "");
-                        upload_content(
-                            agent.robot_server_url.clone(),
-                            path,
-                            key,
-                            robot_job.id.clone(),
-                            agent.api_key.clone(),
-                        )
-                        .await;
-                    }
-                }
-                _ => {
-                    error!("Can't get resulting paths");
-                }
-            }
-        }
+        // if let Some(true) = &self.args.store_data {
+        //     match get_files_in_directory_recursively(&job_data_path) {
+        //         //TODO: change to path
+        //         Ok(paths) => {
+        //             info!("{:?}", paths);
+        //             for path in paths {
+        //                 let path_str = path.as_path().display().to_string();
+        //                 let key = path_str.replace(&get_merklebot_data_path(), "");
+        //                 upload_content(
+        //                     agent.robot_server_url.clone(),
+        //                     path,
+        //                     key,
+        //                     robot_job.id.clone(),
+        //                     agent.api_key.clone(),
+        //                 )
+        //                 .await;
+        //             }
+        //         }
+        //         _ => {
+        //             error!("Can't get resulting paths");
+        //         }
+        //     }
+        // }
         Ok(robot_job_result)
     }
 }

@@ -20,15 +20,13 @@ use crate::store::Message;
 use crate::store::MessageContent;
 use crate::store::MessageRequest;
 use crate::store::MessageResponse;
+use crate::store::SignedMessage;
 use std::sync::{Arc, Mutex};
 use tokio::select;
 use tokio::sync::broadcast;
 
-use agent::{Agent, AgentBuilder};
-
 use develop::unix_socket::SocketServer;
 
-mod agent;
 mod cli;
 mod commands;
 mod develop;
@@ -42,115 +40,18 @@ async fn main_normal(
     to_message_tx: broadcast::Sender<String>,
     from_message_tx: broadcast::Sender<String>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let agent: Agent = AgentBuilder::default()
-        .api_key(args.api_key)
-        .robot_server_url(args.robot_server_url.clone())
-        .build();
-    info!("Starting agent: {:?}", agent);
     let jobs: store::Jobs = Arc::new(Mutex::new(store::JobManager::default()));
 
-    let mut socket = ClientBuilder::new(args.robot_server_url)
-        .auth(json!({"api_key": agent.clone().api_key, "public_key": config.get_public_key_encoded(), "session_type": "ROBOT"}))
-        .on("error", |err, _| {
-            async move { eprintln!("Error: {:#?}", err) }.boxed()
-        });
-
-    {
-        let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
-        let shared_agent = agent.clone();
-        socket = socket.on("new_job", move |payload: Payload, socket: Client| {
-            let shared_jobs = Arc::clone(&shared_jobs);
-            let agent = shared_agent.clone();
-            async move {
-                if let Payload::Text(str) = payload {
-                    let robot_job: RobotJob =
-                        serde_json::from_value(str.first().unwrap().clone()).unwrap(); //serde_json::from_str(&str).unwrap();
-                    commands::launch_new_job(robot_job, Some(socket), agent, shared_jobs).await
-                }
-            }
-            .boxed()
-        })
-    }
-
-    {
-        let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
-        socket = socket.on("start_tunnel", move |payload: Payload, socket: Client| {
-            info!("Start tunnel request");
-            let shared_jobs = Arc::clone(&shared_jobs);
-            async move {
-                if let Payload::Text(str) = payload {
-                    let start_tunnel_request: commands::StartTunnelReq =
-                        serde_json::from_value(str.first().unwrap().clone()).unwrap();
-                    commands::start_tunnel(
-                        commands::TunnnelClient::SocketClient {
-                            socket: socket,
-                            client_id: start_tunnel_request.client_id,
-                            job_id: start_tunnel_request.job_id.clone(),
-                        },
-                        start_tunnel_request.job_id,
-                        shared_jobs,
-                    )
-                    .await
-                }
-            }
-            .boxed()
-        })
-    }
-    {
-        let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
-        socket = socket.on(
-            "message_to_robot",
-            move |payload: Payload, _socket: Client| {
-                info!("Message to robot request");
-                let shared_jobs = Arc::clone(&shared_jobs);
-                async move {
-                    match payload {
-                        Payload::Text(payload) => {
-                            let message: MessageToRobot =
-                                serde_json::from_value(payload.first().unwrap().clone()).unwrap();
-                            commands::message_to_robot(message, shared_jobs).await
-                        }
-                        _ => {}
-                    }
-                }
-                .boxed()
-            },
-        )
-    }
-
-    {
-        let shared_robots: store::Robots = Arc::clone(&robots);
-        socket = socket.on("update_robots", move |payload: Payload, _socket: Client| {
-            match payload {
-                Payload::Text(value) => {
-                    let robots_update: store::RobotsConfig =
-                        serde_json::from_value(value.first().expect("no value got").clone())
-                            .expect("can't parse value");
-                    {
-                        let mut robots_manager = shared_robots.lock().unwrap();
-                        robots_manager.merge_update(robots_update);
-                    }
-                }
-                _ => {}
-            }
-
-            async move {}.boxed()
-        })
-    }
-    let _socket = socket.connect().await?;
     let mut to_message_rx = to_message_tx.subscribe();
 
-    let _res = _socket.emit("me", json!({})).await;
-
-    let sleep = tokio::time::sleep(Duration::from_secs(5));
-    tokio::pin!(sleep);
     let shared_jobs: Arc<Mutex<store::JobManager>> = Arc::clone(&jobs);
 
     loop {
         select! {
             msg = to_message_rx.recv()=>match msg{
                 Ok(msg)=>{
-                    let message = serde_json::from_str::<Message>(&msg)?;
+                    let signed_message = serde_json::from_str::<SignedMessage>(&msg)?;
+                    let message = serde_json::from_str::<Message>(&signed_message.message)?;
                     match message.content{
                         MessageContent::JobMessage(message_content) =>{
                             info!("main got job message: {:?}", message_content);
@@ -169,10 +70,28 @@ async fn main_normal(
                         MessageContent::StartJob(robot_job)=>{
                             info!("new job {:?}", robot_job);
                             let shared_jobs = Arc::clone(&shared_jobs);
-                            let agent = agent.clone();
-                            commands::launch_new_job(robot_job, None, agent, shared_jobs).await;
-
+                            commands::launch_new_job(robot_job, None, shared_jobs).await;
                         },
+                        MessageContent::UpdateConfig{config}=>{
+
+                            info!("UpdateConfig: {:?}", config);
+                            let shared_robots = Arc::clone(&robots);
+                            let mut robot_manager = shared_robots.lock().unwrap();
+                            let signed_message = signed_message.clone();
+                            if signed_message.verify() && signed_message.public_key == robot_manager.owner_public_key{
+                                robot_manager.set_robots_config(config, Some(signed_message));
+                                info!("Config updated");
+                                match robot_manager.save_to_file(args.config_path.clone()){
+                                    Ok(_)=>{
+                                        info!("Config saved to file");
+                                    },
+                                    Err(_)=>{
+                                        error!("Can't save config to file");
+                                    }
+                                }
+                            }
+
+                        }
                         MessageContent::MessageRequest(request)=>{
                             let mut response_content:Option<MessageResponse> = None;
                             match request{
@@ -184,6 +103,14 @@ async fn main_normal(
                                     info!("jobs: {:?}", jobs);
                                     response_content = Some(MessageResponse::ListJobs { jobs: jobs });
                                 },
+                                MessageRequest::GetRobotsConfig{}=>{
+                                    info!("GetRobotsConfig request");
+                                    let shared_robots = Arc::clone(&robots);
+                                    let robot_manager = shared_robots.lock().unwrap();
+                                    let robots_config = robot_manager.get_robots_config();
+                                    info!("config: {:?}", robots_config);
+                                    response_content = Some(MessageResponse::GetRobotsConfig { config:robots_config })
+                                }
                                 _=>{
 
                                 }
@@ -203,13 +130,6 @@ async fn main_normal(
                 Err(_)=>{
                     error!("error while socket receiving libp2p message");
                 }
-            },
-            () = &mut sleep => {
-                info!("me request");
-                let _res = _socket
-                    .emit("me", json!({}))
-                    .await;
-                sleep.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(60));
             },
         }
     }
@@ -237,18 +157,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let mut config: store::Config = store::Config::generate();
-    let config_load_res = store::Config::load_from_file(args.key_filename.clone());
-    match config_load_res {
-        Ok(loaded_config) => config = loaded_config,
-        Err(..) => {
-            info!("Can't load private key from file");
+    match args.clone().secret_key {
+        Some(secret_key_string) => {
+            config = store::Config::load_from_sk_string(secret_key_string)?;
+        }
+        None => {
+            let config_load_res = store::Config::load_from_file(args.key_filename.clone());
+            match config_load_res {
+                Ok(loaded_config) => {
+                    config = loaded_config;
+                }
+                Err(err) => {
+                    info!("Can't load private key from file {:?}", err);
+                }
+            }
         }
     }
+    if let Err(err) = config.save_to_file(args.key_filename.clone()) {
+        error!("Can't write key to file {:?}", err);
+    }
 
-    let robots: store::Robots = Arc::new(Mutex::new(store::RobotsManager {
+    let mut robot_manager = store::RobotsManager {
         self_peer_id: config.get_peer_id(),
         ..Default::default()
-    }));
+    };
+    robot_manager.read_config_from_file(args.config_path.clone());
+    let robots: store::Robots = Arc::new(Mutex::new(robot_manager));
+
+    {
+        let mut robots_manager = robots.lock().unwrap();
+        robots_manager.set_owner(args.clone().owner)?;
+    }
+
     {
         match std::fs::read_to_string("config.json") {
             Ok(contents) => {
@@ -272,7 +212,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let unix_socket_filename = args.socket_filename.clone();
     let _unix_socket_thread = tokio::spawn(async move {
         info!("Start unix socket server");
-        socket_server
+        match socket_server
             .start(
                 from_message_tx_socket,
                 to_message_tx_socket,
@@ -280,6 +220,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 unix_socket_filename,
             )
             .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                error!("UNIX SOCKET MODULE PANIC: {:?}", err);
+            }
+        }
     });
 
     let to_message_tx_libp2p = to_message_tx.clone();
@@ -329,9 +275,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         )
         .await;
     });
-    loop {
-        tokio::time::sleep(Duration::from_secs(1));
-    }
+    _main_thread.await;
 
     Ok(())
 }

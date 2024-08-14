@@ -1,5 +1,7 @@
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, PeerId};
+use libp2p_identity::ed25519;
 use serde::{Deserialize, Serialize};
+use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
@@ -33,14 +35,30 @@ pub enum ChannelMessageFromJob {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "request_type")]
+pub enum RobotRequest {
+    GetConfigVersion {},
+    GetSignedConfigMessage {},
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "response_type")]
+pub enum RobotResponse {
+    GetConfigVersion { version: u32 },
+    GetSignedConfigMessage { signed_message: SignedMessage },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "request_type")]
 pub enum MessageRequest {
     ListJobs {},
+    GetRobotsConfig {},
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "response_type")]
 pub enum MessageResponse {
     ListJobs { jobs: Vec<JobProcessData> },
+    GetRobotsConfig { config: RobotsConfig },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,9 +78,7 @@ pub enum MessageContent {
     },
     StartJob(RobotJob),
     UpdateConfig {
-        config: serde_json::Value,
-        signer: String,
-        sign: String,
+        config: RobotsConfig,
     },
 }
 
@@ -186,8 +202,24 @@ pub struct MessageManager {
 impl MessageManager {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedMessage {
+    pub message: String,
+    sign: Vec<u8>,
+    pub public_key: [u8; 32],
+}
+
+impl SignedMessage {
+    pub fn verify(&self) -> bool {
+        if let Ok(public_key) = ed25519::PublicKey::try_from_bytes(&self.public_key) {
+            return public_key.verify(&*self.message.as_bytes(), &self.sign);
+        }
+        return false;
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub timestamp: u128,
+    pub timestamp: String,
     pub content: MessageContent,
     pub from: String,
     pub to: Option<String>,
@@ -197,7 +229,7 @@ impl Message {
         let duration_since_epoch = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap();
-        let timestamp_nanos = duration_since_epoch.as_nanos();
+        let timestamp_nanos = duration_since_epoch.as_nanos().to_string();
         Self {
             timestamp: timestamp_nanos,
             content,
@@ -205,25 +237,35 @@ impl Message {
             to,
         }
     }
+    pub fn signed(self, keypair: ed25519::Keypair) -> Result<SignedMessage, serde_json::Error> {
+        let message_str = serde_json::to_string(&self)?;
+        let sign = keypair.sign(&*message_str.as_bytes());
+        Ok(SignedMessage {
+            message: message_str,
+            sign,
+            public_key: keypair.public().to_bytes(),
+        })
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RobotRole {
     Current,
     OrganizationRobot,
-    OrganizationAdmin,
+    Owner,
     Unknown,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Robot {
     pub robot_id: String,
     pub robot_peer_id: String,
+    pub robot_public_key: String,
     pub name: String,
     pub tags: Vec<String>,
-    pub interfaces: HashSet<RobotInterface>,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct RobotsConfig {
+    pub version: u32,
     pub robots: Vec<Robot>,
 }
 
@@ -233,19 +275,98 @@ pub struct RobotInterface {
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
+pub struct RobotsManagerDump {
+    config: RobotsConfig,
+    config_message: Option<SignedMessage>,
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct RobotsManager {
     pub self_peer_id: String,
+    pub owner_peer_id: String,
+    pub owner_public_key: [u8; 32],
     pub robots: HashMap<String, Robot>,
+    pub config_version: u32,
+    pub config_message: Option<SignedMessage>,
     pub peer_id_to_ip: HashMap<String, String>,
+    pub peers: Vec<PeerId>,
 }
 
 impl RobotsManager {
     pub fn add_robot(&mut self, robot: Robot) {
         self.robots
             .insert(robot.robot_peer_id.clone(), robot.clone());
-        if let Some(ip4) = self.peer_id_to_ip.get(&robot.robot_peer_id) {
-            self.add_interface_to_robot(robot.robot_peer_id, ip4.to_string());
+        // if let Some(ip4) = self.peer_id_to_ip.get(&robot.robot_peer_id) {
+        //     self.add_interface_to_robot(robot.robot_peer_id, ip4.to_string());
+        // }
+    }
+
+    pub fn set_robots_config(
+        &mut self,
+        config: RobotsConfig,
+        signed_message: Option<SignedMessage>,
+    ) {
+        if config.version > self.config_version {
+            self.robots.clear();
+            self.config_version = config.version;
+            for robot in config.robots {
+                self.add_robot(robot);
+            }
+            self.config_message = signed_message
+        } else {
+            info!("config version is too old");
         }
+    }
+
+    pub fn save_to_file(&self, filepath: String) -> Result<(), Box<dyn Error>> {
+        let dump = RobotsManagerDump {
+            config: self.get_robots_config(),
+            config_message: self.config_message.clone(),
+        };
+        fs::write(filepath, serde_json::to_string(&dump)?)?;
+        Ok(())
+    }
+    pub fn read_config_from_file(&mut self, filepath: String) -> Result<(), Box<dyn Error>> {
+        let dump_str = fs::read_to_string(filepath)?;
+        let dump: RobotsManagerDump = serde_json::from_str(&dump_str)?;
+        self.set_robots_config(dump.config, dump.config_message);
+        Ok(())
+    }
+
+    pub fn get_robots_config(&self) -> RobotsConfig {
+        return RobotsConfig {
+            version: self.config_version,
+            robots: self
+                .robots
+                .values()
+                .map(|robot| robot.clone())
+                .collect::<Vec<Robot>>(),
+        };
+    }
+
+    pub fn set_peers(&mut self, peers: Vec<PeerId>) {
+        self.peers = peers
+    }
+
+    pub fn set_owner(&mut self, owner_b64: String) -> Result<(), Box<dyn Error>> {
+        let decoded_key = general_purpose::STANDARD.decode(owner_b64);
+        match decoded_key {
+            Ok(owner_public_key) => {
+                match owner_public_key.as_slice().try_into() {
+                    Ok(pk) => {
+                        self.owner_public_key = pk;
+                    }
+                    _ => {
+                        return Err("can't transform pk array".into());
+                    }
+                };
+            }
+            _ => {
+                return Err("can't decode pk from b64".into());
+            }
+        }
+
+        Ok(())
     }
 
     pub fn read_robots_from_config(&mut self, config: String) {
@@ -256,25 +377,44 @@ impl RobotsManager {
         }
     }
 
-    pub fn add_interface_to_robot(&mut self, robot_peer_id: String, ip4: String) {
-        info!("Adding interface {} = {}", robot_peer_id, ip4);
-        match self.robots.get_mut(&robot_peer_id) {
-            Some(robot) => {
-                robot.interfaces.insert(RobotInterface { ip4 });
-            }
-            None => {
-                info!("No robot for peer id {}", robot_peer_id);
-                self.peer_id_to_ip.insert(robot_peer_id, ip4);
-            }
-        }
-    }
+    // pub fn add_interface_to_robot(&mut self, robot_peer_id: String, ip4: String) {
+    //     info!("Adding interface {} = {}", robot_peer_id, ip4);
+    //     match self.robots.get_mut(&robot_peer_id) {
+    //         Some(robot) => {
+    //             robot.interfaces.insert(RobotInterface { ip4 });
+    //         }
+    //         None => {
+    //             info!("No robot for peer id {}", robot_peer_id);
+    //             self.peer_id_to_ip.insert(robot_peer_id, ip4);
+    //         }
+    //     }
+    // }
 
-    pub fn get_role(&self, peer_id: String) -> RobotRole {
-        for robot_peer_id in self.robots.keys() {
-            if robot_peer_id == &peer_id {
-                return RobotRole::OrganizationRobot;
+    pub fn get_role<T: Any>(&self, id: T) -> RobotRole {
+        let value_any = &id as &dyn Any;
+        if let Some(peer_id) = value_any.downcast_ref::<String>() {
+            for robot_peer_id in self.robots.keys() {
+                if robot_peer_id == peer_id {
+                    return RobotRole::OrganizationRobot;
+                }
+            }
+        } else if let Some(public_key) = value_any.downcast_ref::<[u8; 32]>() {
+            if *public_key == self.owner_public_key {
+                return RobotRole::Owner;
+            }
+
+            let pk_str = general_purpose::STANDARD.encode(&public_key.to_vec());
+            for robot_public_key in self
+                .robots
+                .values()
+                .map(|robot| robot.robot_public_key.clone())
+            {
+                if robot_public_key == pk_str {
+                    return RobotRole::OrganizationRobot;
+                }
             }
         }
+
         return RobotRole::Unknown;
     }
 
@@ -333,6 +473,17 @@ impl Config {
         let parsed_identity = libp2p::identity::ed25519::Keypair::try_from_bytes(decoded_key)?;
         Ok(Self {
             identity: parsed_identity,
+            bootstrap_addrs: Vec::new(),
+            libp2p_port: 0,
+        })
+    }
+
+    pub fn load_from_sk_string(sk_string: String) -> Result<Self, Box<dyn Error>> {
+        let decoded_key: &mut [u8] = &mut general_purpose::STANDARD.decode(sk_string)?;
+        let parsed_secret = libp2p::identity::ed25519::SecretKey::try_from_bytes(decoded_key)?;
+        let identity = libp2p::identity::ed25519::Keypair::from(parsed_secret);
+        Ok(Self {
+            identity,
             bootstrap_addrs: Vec::new(),
             libp2p_port: 0,
         })
