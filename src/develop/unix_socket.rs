@@ -1,6 +1,7 @@
 use crate::store::Message;
 use crate::store::MessageContent;
 use crate::store::Robots;
+use crate::store::SignedMessage;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
@@ -52,6 +53,7 @@ pub struct Content {
 struct SocketCommand {
     action: String,
     content: Option<Content>,
+    signed_message: Option<SignedMessage>,
 }
 
 impl SocketServer {
@@ -101,13 +103,19 @@ impl SocketServer {
                         msg = to_message_rx.recv()=>{
                             match msg{
                                 Ok(msg) => {
-                                    let message = serde_json::from_str::<Message>(&msg)?;
-                                    info!("socket received libp2p message: {:?}", message.content);
-                                    let content_serialized = message.content.serialize(serde_json::value::Serializer)?;
+                                    let mut msg_to_socket: Option<String> = None;
+                                    if let Ok(message) = serde_json::from_str::<Message>(&msg){
+                                        info!("socket received libp2p message: {:?}", message.content);
+                                        let content_serialized = message.content.serialize(serde_json::value::Serializer)?;
+                                        msg_to_socket = Some(content_serialized.to_string());
+                                    }else if let Ok(signed_message) = serde_json::from_str::<SignedMessage>(&msg){
+                                        info!("socket received libp2p signed message: {:?}", signed_message);
+                                        msg_to_socket = Some(serde_json::to_string(&signed_message)?);
+                                    }
                                     let message_queue_clone = Arc::clone(&self.message_queue);
-                                    {
+                                    if let Some(msg_to_socket) = msg_to_socket{
                                         let mut message_queue = message_queue_clone.lock().unwrap();
-                                        message_queue.add_message(content_serialized.to_string());
+                                        message_queue.add_message(msg_to_socket);
                                         message_queue.broadcast_messages()?;
                                     }
                                 }
@@ -134,7 +142,7 @@ async fn handle_stream(
     robots: Robots,
 ) -> Result<(), Box<dyn Error>> {
     stream.readable().await?;
-    let mut data = vec![0; 2048];
+    let mut data = vec![0; 65536];
     if let Ok(n) = stream.try_read(&mut data) {
         info!("read {} bytes", n);
         let message = std::str::from_utf8(&data[..n])?;
@@ -142,45 +150,57 @@ async fn handle_stream(
         match serde_json::from_str::<SocketCommand>(message) {
             Ok(command) => {
                 info!("command: {:?}", command);
-                if command.action == "/me" {
-                    info!("/me request");
-                    //stream.writable().await?;
-                    //match stream.try_write(b"{\"name\":\"\"}") {
-                    //    Ok(_) => {}
-                    //    Err(_) => {}
-                    //}
-                }
-                if command.action == "/local_robots" {
-                    info!("/local_robots request");
-                    stream.writable().await?;
-                    let robots_manager = robots.lock().unwrap();
-                    let robots_text = robots_manager.clone().get_robots_json();
-                    info!("robots: {}", robots_text);
-                    match stream.try_write(&robots_text.into_bytes()) {
-                        Ok(_) => {}
-                        Err(_) => {
-                            error!("can't write /robots result to unix socket")
+                match command.action.as_str() {
+                    "/me" => {
+                        info!("/me request");
+                    }
+                    "/local_robots" => {
+                        info!("/local_robots request");
+                        stream.writable().await?;
+                        let robots_manager = robots.lock().unwrap();
+                        let robots_text = robots_manager.clone().get_robots_json();
+                        info!("robots: {}", robots_text);
+                        match stream.try_write(&robots_text.into_bytes()) {
+                            Ok(_) => {}
+                            Err(err) => {
+                                error!("can't write /robots result to unix socket: {:?}", err)
+                            }
                         }
                     }
-                }
-                if command.action == "/send_message" {
-                    if let Some(message_content) = command.content {
-                        let _ = from_message_tx.send(serde_json::to_string(&Message::new(
-                            message_content.content,
-                            "".to_string(),
-                            Some(message_content.to),
-                        ))?);
-                        info!("Sent from unix socket to libp2p");
+                    "/send_message" => {
+                        if let Some(message_content) = command.content {
+                            let _ = from_message_tx.send(serde_json::to_string(&Message::new(
+                                message_content.content,
+                                "".to_string(),
+                                Some(message_content.to),
+                            ))?);
+                            info!("Sent from unix socket to libp2p");
+                            stream.writable().await?;
+                            stream.try_write(b"{\"ok\":true}")?;
+                        }
+                    }
+                    "/send_signed_message" => {
+                        if command.action == "/send_signed_message" {
+                            if let Some(signed_message) = command.signed_message {
+                                let _ =
+                                    from_message_tx.send(serde_json::to_string(&signed_message)?);
+                                info!("Sent from unix socket to libp2p");
+                                stream.writable().await?;
+                                if let Err(_err) = stream.try_write(b"{\"ok\":true}") {
+                                    error!(
+                                        "Can't write /send_signed_message result to unix socket"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    "/subscribe_messages" => {
+                        info!("/subscribe_messages request");
                         stream.writable().await?;
                         stream.try_write(b"{\"ok\":true}")?;
+                        message_queue.lock().unwrap().add_subscriber(stream);
                     }
-                }
-
-                if command.action == "/subscribe_messages" {
-                    info!("/subscribe_messages request");
-                    stream.writable().await?;
-                    stream.try_write(b"{\"ok\":true}")?;
-                    message_queue.lock().unwrap().add_subscriber(stream);
+                    _ => {}
                 }
             }
             Err(err) => {

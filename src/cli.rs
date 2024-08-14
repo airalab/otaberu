@@ -3,29 +3,29 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    #[arg(short, long)]
-    pub api_key: String,
-
-    #[arg(short, long, default_value = "https://robots.merklebot.com")]
-    pub robot_server_url: String,
-
-    #[arg(short, long, default_value = "normal")]
+    #[arg(short = 'm', long, default_value = "normal")]
     pub mode: String,
 
-    #[arg(short, long, default_value = "merklebot.socket")]
+    #[arg(short = 's', long, default_value = "rn.socket")]
     pub socket_filename: String,
 
-    #[arg(short, long, default_value = "merklebot.key")]
+    #[arg(short = 'f', long, default_value = "rn.key")]
     pub key_filename: String,
 
-    #[arg(short, long)]
+    #[arg(short = 'b', long)]
     pub bootstrap_addr: Option<String>,
 
-    #[arg(short, long, default_value = "8765")]
+    #[arg(short = 'l', long, default_value = "8765")]
     pub port_libp2p: String,
 
-    #[arg(short, long)]
-    pub owner: Option<String>,
+    #[arg(short = 'c', long, default_value = "rn.json")]
+    pub config_path: String,
+
+    #[arg(short = 'k', long)]
+    pub secret_key: Option<String>,
+
+    #[arg(short = 'o', long)]
+    pub owner: String,
 }
 
 pub fn get_args() -> Args {
