@@ -11,13 +11,13 @@ fn get_home_dir() -> String {
     }
 }
 
-pub fn get_merklebot_data_path() -> String {
-    let path = get_home_dir() + "/.merklebot/";
+pub fn get_data_path() -> String {
+    let path = get_home_dir() + "/.rn/";
     path
 }
 
 pub fn get_job_data_path(job_id: &str) -> String {
-    let path = get_merklebot_data_path() + "job-" + job_id + "/";
+    let path = get_data_path() + "job-" + job_id + "/";
     path
 }
 

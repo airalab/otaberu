@@ -1,15 +1,9 @@
 use std::error::Error;
 
-use commands::{MessageToRobot, RobotJob};
+use commands::MessageToRobot;
 use futures_util::FutureExt;
 
 use libp2p::Multiaddr;
-use rust_socketio::{
-    asynchronous::{Client, ClientBuilder},
-    Payload,
-};
-use serde_json::json;
-use std::time::Duration;
 
 use cli::Args;
 
@@ -70,7 +64,7 @@ async fn main_normal(
                         MessageContent::StartJob(robot_job)=>{
                             info!("new job {:?}", robot_job);
                             let shared_jobs = Arc::clone(&shared_jobs);
-                            commands::launch_new_job(robot_job, None, shared_jobs).await;
+                            commands::launch_new_job(robot_job, shared_jobs).await;
                         },
                         MessageContent::UpdateConfig{config}=>{
 

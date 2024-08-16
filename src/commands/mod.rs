@@ -1,8 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-use rust_socketio::asynchronous::Client;
-
 use serde::{Deserialize, Serialize};
 
 use serde_json::json;
@@ -56,11 +54,6 @@ pub struct RobotStartTunnelResponse {
     error: Option<String>,
 }
 pub enum TunnnelClient {
-    SocketClient {
-        socket: Client,
-        client_id: String,
-        job_id: String,
-    },
     RobotClient {
         peer_id: String,
         from_robot_tx: Sender<String>,
@@ -68,7 +61,7 @@ pub enum TunnnelClient {
     },
 }
 
-pub async fn launch_new_job(robot_job: RobotJob, socket: Option<Client>, jobs: store::Jobs) {
+pub async fn launch_new_job(robot_job: RobotJob, jobs: store::Jobs) {
     info!("{:?}", robot_job);
     let mut job_manager = jobs.lock().unwrap();
     job_manager.new_job(
@@ -82,7 +75,7 @@ pub async fn launch_new_job(robot_job: RobotJob, socket: Option<Client>, jobs: s
         "docker-container-launch" => {
             info!("container launch");
             let shared_jobs = Arc::clone(&jobs);
-            tokio::spawn(docker::execute_launch(socket, robot_job, shared_jobs));
+            tokio::spawn(docker::execute_launch(robot_job, shared_jobs));
         }
         _ => {}
     }
@@ -97,22 +90,6 @@ pub async fn start_tunnel_messanger(
         let data = rx.recv().await.unwrap();
         let client = &client;
         match client {
-            TunnnelClient::SocketClient {
-                socket,
-                client_id,
-                job_id: _,
-            } => match data {
-                ChannelMessageFromJob::TerminalMessage(stdout) => {
-                    info!("from docker: {}", stdout);
-                    let _res: Result<(), rust_socketio::Error> = socket
-                        .emit(
-                            "message_to_client",
-                            json!({"client_id": client_id, "content": {"stdout": stdout}}),
-                        )
-                        .await;
-                }
-                _ => {}
-            },
             TunnnelClient::RobotClient {
                 peer_id,
                 from_robot_tx,
@@ -154,25 +131,6 @@ pub async fn start_tunnel(tunnel_client: TunnnelClient, job_id: String, jobs: st
 
     match job_manager.get_job_or_none(&job_id) {
         Some(_job) => match tunnel_client {
-            TunnnelClient::SocketClient {
-                socket,
-                client_id,
-                job_id,
-            } => {
-                job_manager.create_job_tunnel(&job_id, client_id.clone());
-                if let Some(channel_tx) = job_manager.get_channel_from_job(&job_id) {
-                    tokio::spawn(start_tunnel_messanger(
-                        channel_tx.clone(),
-                        TunnnelClient::SocketClient {
-                            socket,
-                            client_id: client_id.clone(),
-                            job_id,
-                        },
-                    ));
-                } else {
-                    info!("no channel tx");
-                }
-            }
             TunnnelClient::RobotClient {
                 peer_id,
                 from_robot_tx,

@@ -1,5 +1,4 @@
 use bollard::Docker;
-use rust_socketio::asynchronous::Client;
 
 use futures_util::{StreamExt, TryStreamExt};
 use std::sync::Arc;
@@ -16,11 +15,11 @@ use crate::{
     store::Jobs,
     utils::files::{
         create_job_data_dir, get_files_in_directory_recursively, get_job_data_path,
-        get_merklebot_data_path, upload_content,
+        get_data_path, upload_content,
     },
 };
 
-pub async fn execute_launch(socket: Option<Client>, robot_job: RobotJob, jobs: Jobs) {
+pub async fn execute_launch(robot_job: RobotJob, jobs: Jobs) {
     let args = serde_json::from_str::<DockerLaunchArgs>(&robot_job.args).unwrap();
     info!("launching docker job {:?}", args);
     let docker_launch = DockerLaunch { args };
