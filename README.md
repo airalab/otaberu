@@ -1,235 +1,121 @@
-# Merklebot's Robot-Agent
+## Download agent
+Download agent from https://github.com/Smehnov/robot-agent/releases/latest for your platform architecture
 
-## Roadmap
+*For example:*
+`wget https://github.com/Smehnov/robot-agent/releases/download/0.1.1/robot-agent-aarch64-apple-darwin`
 
-- [X] auto restart and system service launch
-- [ ] config on the platform 
-- [ ] tui for agent state monitoring
-- [ ] key based auth
-- [ ] autonomous config update
+Rename it 
+`mv robot-agent-aarch64-apple-darwin robot-agent`
 
-## Installation and run
-### You can run agent directly from terminal
-1. Manually [download latest release](https://github.com/merklebot/robot-agent/releases) of agent for your system
-2. Make agent executable
-```bash
-chmod +x robot-agent-...
-```
-3. Run agent with ``api-key`` (run only with -k parameter if do not need platform)
+And make executable:
+`chmod +x robot-agent`
 
-```bash
-./robot-agent-... -a <API_KEY> -r http://robots.merklebot.com:8888 -k <BASE_64_OF_ED25519>
-```
+## Install rn-cli
+`pip3 install rn-cli --upgrade`
 
-### Run agent as systemd service
-Use easy to run script:
-```bash
-curl -s https://app.merklebot.com/install.sh | bash -s <API_KEY>
-```
-The copy of script could be found at [this repository](https://github.com/merklebot/robot-agent/blob/main/install.sh)
+## Create owner key
+We create a keypair for an organization owner.  Public key will be place to all agents while startup. Secret key is used to sign messages for the Robot Network.
 
-To stop agent
-```bash
-systemctl disable merklebot 
-```
+To create key, use cli command:
+`rn keys gen owner.key`
 
-## Modules
-The agent consists of 4 main modules:
-- Platform module
-- Docker module
-- Libp2p interaction module
-- Unix Socket Interface
+After running this command, key will be created by set path and you will see public key in `base64` format:
+`Public Key: Qwu4TtfNOcQzMJkGiYvJ4IuZSuszM0w1ViEEuAHlzo0=`
 
+To continue, let's set `USER_KEY_PATH` environment variable that contains path to owner key
+`export USER_KEY_PATH=owner.key`
+## Create configuration for robots network
+==To publish config, you should firstly run agent on your machine and set path to socket(same folder as an agent by default).==
+==`export AGENT_SOCKET_PATH=rn.socket`==
 
-![Agent Scheme](docs/assets/Agent%20Scheme.png)
+We use cli's TUI to configure a list of robots:
+`rn tui config robots.json`
 
-### Main (Platform)
-First of all, robot-agent can be connected to merklebot's platform (app.merklebot.com) to get jobs from the cloud. 
-For authentication, agent needs `api-key` which is available on a platform after your robot instance is created. 
+After launch, you will see an interface with robots:
+![](https://i.ibb.co/PQfm3zy/Pasted-image-20240812210939.png)
 
-> **Note**
-> In next version of agent `api-key` will be changed for `key` (check libp2p section)
-<!-- (WILL USE ONLY `key` IN THE FUTURE) --> 
+Then we click "Add robot" to generate key and set info:
+![](https://i.ibb.co/Ykv83KF/Pasted-image-20240812211358.png)
 
-### Docker
-All the jobs sent from platform are splitted to 2 categories:
 
-1. Execution of container wrapper code
-2. Direct access to the terminal (of containerized environment)
+**Save Private Key, it will be used to start agent on a device. If you have problem to select a text, try holding shift or option key**
 
-Via port forwarding and docker volumes system it could be extended to manipulation of the whole host system.
+To publish config, you should firstly run agent(add new robot without publishing yet) on your machine and set path to socket(same folder as an agent by default).
+`export AGENT_SOCKET_PATH=rn.socket`
 
-It is also possible to store some data after job execution in bucket on merklebot's platform.
+After adding all robots, press key `p` or click on 'publish config' in footer
 
-### Libp2p
+## Start Agent on robot
+To start agent use:
 
-Libp2p protocol is used for advanced discovery of other agents (via mDNS) and messaging between agents.
+`./robot-agent --owner <OWNER_PUBLIC_KEY> --secret-key <ROBOT_SECRET_KEY>`
 
-For usage of this module, you'll need a `key` - base64 encoded key.
 
-<!-- Discovering other agents in the network and message forwarding.
-It needs `key` - base64 encoded private key. -->
-
-### Unix Socket Interface
-Interface for applications and containers on devices. It creates a `merklebot.socket` file which provides JSON API for interactions with an agent. 
-
-
-## Feautures 
-
-### Docker Job running via Platform
-
-With [platform](https://app.merklebot.com) or via [API](https://github.com/merklebot/mb-cli) some code wrapped in docker container could be executed as job.
-
-
-![Docker Job Screen](docs/assets/Docker%20Job.png)
-
-1. **Docker Image**
-
-Insert link for a container wrapped code. It should be stored in some publicly accessible container register (in other words `docker pull LINK` should work) 
-
-2. Docker Container Name
-
-Name container to your liking, but with standard docker naming limitations
-
-3. Environmental variables
-
-Add all the variables you think you'll need (like API keys, super secrets and other cool things)
-
-4. Network mode:
-Switch between closed `default` network or allow `host` one
-
-5. Privileged mode
-
-Run container with admin privileges. It could be used, if devices or specific host system volumes are needed in use.
-
-6. Port binding
-
-Share ports between container and host system
-
-7. Volumes
-
-Share folders or devices between container and host system
-
-#### Store data on the platform
-
-To store data after job is executed:
-
-1) Create bucket at app.merklebot.com
-2) Assign the bucket to the robot
-3) Turn on `Store data` in job configuration
-4) Place required files in `/merklebot/job_data/` folder
-
-After the code execution, files would be loaded to your bucket and accessible in job result screen
-
-#### Access container's terminal
-
-To access terminal of container via web-interface, add `sh` to your `custom tty` filed of job config.
-
-The terminal could be reached in job status screen (OPEN TERMINAL). 
-
->**Note**
->To end job, don't forget to send `exit`.
-
-### Docker Job running via CLI
-You can use CLI tool to interact with your agents. Currently, it is in development.
-Two functions are supported:
-
-1. Get robot states
-2. Send docker jobs
-
-Detailed information could be obtained [here](https://merklebot.notion.site/CLI-Job-Deployment-bb47bdc56f08479ca1756be3fd17c3e5). 
-
-### Devices discovery
-
-To connect different to devices (with different agents on them), you should create a device group config and spread it around devices. With the usage of this config, agent can match PeerId's and return IP addresses of devices in local network.
-
-It could be used to avoid static IP for your group of devices.
-
-To get devices, send JSON  `{"action": "/local_robots"}` to  `merklebot.socket`
-
-Example of `config.json`:
-```JSON
-{
-  "robots": [
-    {
-      "robot_id": "device-0",
-      "robot_peer_id": "12D3KooWKnY2J5CFny3Ef8abndmg9U4gAkndUDPM4oMP7yVbftBK",
-      "name": "spot",
-      "tags": [],
-      "interfaces": []
-    },
-    {
-      "robot_id": "device-1",
-      "robot_peer_id": "12D3KooWK8ogtRq7DXD21ji9nwkTgCfuz6AYU9dys8GrH7weC2AC",
-      "name": "jetson",
-      "tags": [],
-      "interfaces": []
-    }
-  ]
-}
-```
-
-Example of python code:
-```python
-import socket
-import os
-import json
-import pprint
-
-socket_path = "FOLDER_WITH_AGENT/merklebot.socket"
-
-def local_robots():
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.connect(os.path.realpath(socket_path))
-    message = {"action": "/local_robots"}
-    client.sendall(json.dumps(message).encode())
-    response = client.recv(1024).decode()
-    client.close()
-    return json.loads(response)
-
-pprint.pprint(local_robots()) # prints json with found devices
-```
-
- 
-### Libp2p messaging 
-
-Agents can exchange data using libp2p messaging protocol. Therefore, you won't need to worry about addressing between your robots. To use it, you'll need a robot group config like in previous section.
-
-To send message, send JSON `{"action": "/send_message", "content": "TEXT_OF_MESSAGE"}` to  `merklebot.socket`
-
-To receive one, subscribe with JSON `{"action": "/subscribe_messages"}`
-
-Python code example:
-```python
-import socket
-import os
-import json
-import pprint
-import time
-
-socket_path = "FOLDER_WITH_AGENT/merklebot.socket"
-
-def send_message(message_content):
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.connect(os.path.realpath(socket_path))
-    message = {"action": "/send_message"}
-    message["content"] = message_content
-    client.sendall(json.dumps(message).encode())
-    response = client.recv(1024).decode()
-    client.close()
-    return json.loads(response)
-
-def subscribe_messages():
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.connect(os.path.realpath(socket_path))
-        client.sendall(json.dumps({"action": "/subscribe_messages"}).encode())
-        while True:
-            time.sleep(0.1)
-            response = client.recv(1024).decode()
-            if response:
-                print(response)
+| Argument               | Description                            | Default   |
+| ---------------------- | -------------------------------------- | --------- |
+| --socket-filename (-s) | path to create unix socket             | rn.socket |
+| --key-filename (-k)    | path to save secret key                | rn.key    |
+| --port-libp2p (-l)     | port to use as libp2p node             | 8765      |
+| --bootstrap-addr (-b)  | multiaddress of bootstrap node         |           |
+| --secret-key (-s)      | secret key in base64 to use on startup |           |
+| --owner (-0)           | base64 public key of the owner         |           |
+## See robots list
+To see robots in network we use cli command
+`rn robots list`
 
 ```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┓
+┃ PeerId                                               ┃ Name   ┃ Status  ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━┩
+│ 12D3KooWFGndT5BRXBSUGcQzT5zgYgyUVR6rbsVYTf4iSVA5Udob │ laptop │ Unknown │
+│ 12D3KooWAgJuo1havrarkR4oy1zauEBTv9Bvg21g1V5qihhMnmEw │ robot  │ Unknown │
+└──────────────────────────────────────────────────────┴────────┴─────────┘
+```
+
+## Start docker job
+We can use CLI to launch docker job. `rn jobs add` command accepts path to json with job description and robot name(or peer_id) as arguments.
+
+`rn jobs add <PATH_TO_JSON> <ROBOT>`
+
+Let's start example `alpine:3` container (https://github.com/Smehnov/rn/blob/main/job_terminal.json):
+
+`rn jobs add job_terminal.json turtlebot-0`
+
+After sending command you will see a message with `job_id`
+```
+Preparing job:  521652a7-5715-496f-961d-1a0f1efbf1cc
+Requests sent
+```
+## See jobs list
+`rn jobs list <ROBOT>`
+
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ Job Id                               ┃ Job Type                ┃ Status     ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ 521652a7-5715-496f-961d-1a0f1efbf1cc │ docker-container-launch │ processing │
+└──────────────────────────────────────┴─────────────────────────┴────────────┘
+
+```
+
+## Connect to job's terminal
+
+We can access job terminal if job was launched with `"custom_command": "sh"`
+
+`rn jobs terminal <ROBOT> <JOB_ID>`
+`rn jobs terminal turtlebot-0 521652a7-5715-496f-961d-1a0f1efbf1cc`
+
+```
+receiver started
+===TERMINAL SESSION STARTED===
+
+/ #
+/ # ls
+/ # bin    etc    lib    mnt    proc   run    srv    tmp    var
+dev    home   media  opt    root   sbin   sys    usr
+```
+
+Use `Ctrl+D` to exit
 
 
 
