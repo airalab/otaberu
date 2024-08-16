@@ -5,6 +5,5 @@ debug/
 .vscode
 .DS_Store
 *.key
-merklebot.key
 script.py
 
