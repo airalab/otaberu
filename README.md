@@ -1,8 +1,8 @@
 ## Download agent
-Download agent from https://github.com/Smehnov/robot-agent/releases/latest for your platform architecture
+Download agent from https://github.com/otaberu/robot-agent/releases/latest for your platform architecture
 
 *For example:*
-`wget https://github.com/Smehnov/robot-agent/releases/download/0.1.1/robot-agent-aarch64-apple-darwin`
+`wget https://github.com/otaberu/robot-agent/releases/download/0.1.1/robot-agent-aarch64-apple-darwin`
 
 Rename it 
 `mv robot-agent-aarch64-apple-darwin robot-agent`
