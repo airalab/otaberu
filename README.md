@@ -1,3 +1,9 @@
+## About Robot Agent
+Robot Agent enables device-to-device communication based on [libp2p protocol](https://libp2p.io). With Robot Agent, you can organize geographically dispersed robotic operations easily. The software facilitates setup of CI/CD and data management pipelines, all while ensuring secure networking.
+
+Currently, it supports sending Docker jobs to devices via libp2p and allows direct connection to these jobs through a CLI terminal. CLI tool with terminal UI is a convenient way to manage the robots in your fleet: logs, media data, Docker containers and configs. 
+
+
 ## Download agent
 Download agent from https://github.com/otaberu/robot-agent/releases/latest for your platform architecture
 
