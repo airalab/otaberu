@@ -1,14 +1,13 @@
+use crate::cli::Args;
 use crate::store::Config;
 use crate::store::Message;
 use crate::store::MessageContent;
 use crate::store::RobotRequest;
 use crate::store::RobotResponse;
-use crate::store::RobotRole;
 use crate::store::Robots;
 use crate::store::SignedMessage;
 
 use futures::stream::StreamExt;
-use libp2p::relay::client::new;
 use libp2p::PeerId;
 use libp2p::StreamProtocol;
 use libp2p::{
@@ -27,6 +26,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 use tokio::{io, select};
 use tracing::{error, info};
 
@@ -44,27 +44,31 @@ fn process_signed_message(
     message_string: String,
     robots: Robots,
     to_message_tx: broadcast::Sender<String>,
+    args: &Args,
 ) {
     if let Ok(signed_message) = serde_json::from_str::<SignedMessage>(&message_string) {
         info!("signed_message: {:?}", signed_message);
-        let robot_manager = robots.lock().unwrap();
+        let mut robot_manager = robots.lock().unwrap();
         if signed_message.verify() {
             info!("Verified");
             if let Ok(message) = serde_json::from_str::<Message>(&signed_message.message) {
                 info!("message: {:?}", message);
+                let _ = to_message_tx.send(message_string);
 
-                if message.to.unwrap_or("".to_string()) == robot_manager.self_peer_id
-                    || matches!(message.content, MessageContent::UpdateConfig { .. })
-                {
-                    let role = robot_manager.get_role(signed_message.public_key);
-                    info!("role: {:?}", role);
-                    if matches!(role, RobotRole::Owner)
-                        || matches!(role, RobotRole::OrganizationRobot)
-                    {
-                        let _ = to_message_tx.send(message_string);
+                if args.rpc.is_some() {
+                    if let MessageContent::UpdateConfig { config } = message.content {
+                        info!("UPDATE CONFIG");
+                        info!("{:?}", signed_message.public_key);
+                        robot_manager.config_storage.update_config(
+                            signed_message.public_key,
+                            config,
+                            signed_message,
+                        );
                     }
                 }
             }
+        } else {
+            info!("not verified");
         }
     }
 }
@@ -76,6 +80,7 @@ async fn start(
     to_message_tx: broadcast::Sender<String>,
     from_message_tx: broadcast::Sender<String>,
     robots: Robots,
+    args: Args,
 ) -> Result<(), Box<dyn Error>> {
     let public_key: libp2p::identity::PublicKey = identity.public().into();
     info!("PeerId: {:?}", public_key.to_peer_id());
@@ -183,7 +188,7 @@ async fn start(
                         }
                     } else if let Ok(signed_message) = serde_json::from_str::<SignedMessage>(&msg){
                         info!("libp2p received socket signed_message: {:?}", signed_message);
-                        process_signed_message(msg.clone(), Arc::clone(&robots), to_message_tx.clone());
+                        process_signed_message(msg.clone(), Arc::clone(&robots), to_message_tx.clone(), &args);
                         if let Err(e) = swarm
                             .behaviour_mut().gossipsub
                             .publish(topic.clone(), serde_json::to_string(&signed_message)?.as_bytes()) {
@@ -233,7 +238,7 @@ async fn start(
                                 String::from_utf8_lossy(&message.data),
                             );
                             let message_string = String::from_utf8_lossy(&message.data).to_string();
-                            process_signed_message(message_string, Arc::clone(&robots), to_message_tx.clone());
+                            process_signed_message(message_string, Arc::clone(&robots), to_message_tx.clone(), &args);
 
                         },
                         MyBehaviourEvent::Kademlia(event)=>{
@@ -262,6 +267,7 @@ async fn start(
                            }
                         },
                         MyBehaviourEvent::RequestResponse(event)=>{
+                            info!("req resp {:?}", event);
                             match event{
                                 request_response::Event::Message{
                                     peer,
@@ -272,59 +278,60 @@ async fn start(
                                     },
                                 }=>{
 
-                                    let robot_manager = robots.lock().unwrap();
+                                    info!("request: {:?}", request );
 
-                                    if let RobotRole::OrganizationRobot = robot_manager.get_role(peer.to_string()){
                                         match request{
-                                            RobotRequest::GetConfigVersion{}=>{
+                                            RobotRequest::GetConfigVersion{version, owner}=>{
+                                                let robot_manager = robots.lock().unwrap();
                                                 info!("get config verison request from peer {}", peer);
-                                                let version = robot_manager.config_version.clone();
-                                                let _ =swarm.behaviour_mut().request_response.send_response(channel, RobotResponse::GetConfigVersion { version });
+
+                                                let mut stored_version = 0;
+
+                                                if let Some((config, signed_message)) = robot_manager.config_storage.get_config(&owner){
+                                                    if version<config.version{
+                                                        info!("sharing config");
+                                                        swarm.behaviour_mut().request_response.send_request(&peer, RobotRequest::ShareConfigMessage { signed_message} );
+                                                    }
+                                                    stored_version = config.version;
+                                                }
+
+                                                let _ =swarm.behaviour_mut().request_response.send_response(channel, RobotResponse::GetConfigVersion { version:stored_version, owner });
 
                                             },
-                                            RobotRequest::GetSignedConfigMessage{}=>{
-                                                info!("get signed config request from peer {}", peer);
-                                                if let Some(config_message) = &robot_manager.config_message{
-                                                    let _ = swarm.behaviour_mut().request_response.send_response(channel, RobotResponse::GetSignedConfigMessage {
-                                                        signed_message: config_message.clone()
-                                                    });
-                                                }
-                                            },
-                                            _=>{
+                                            RobotRequest::ShareConfigMessage{signed_message}=>{
+                                                info!("got config from peer {}", peer);
+                                                let robots = Arc::clone(&robots);
+                                                process_signed_message(serde_json::to_string(&signed_message)?, robots, to_message_tx.clone(), &args);
 
                                             }
                                         }
-                                    }
-
                                 },
                                 request_response::Event::Message{
                                     peer,
                                     message:
                                     request_response::Message::Response {
-                                        request_id,
                                         response,
+                                        ..
                                     },
                                 }=>{
                                     match response {
-                                        RobotResponse::GetConfigVersion{version}=>{
+                                        RobotResponse::GetConfigVersion{version, owner}=>{
                                             info!("got config version {} from peer {}", version, peer);
                                             let robot_manager = robots.lock().unwrap();
-                                            if version>robot_manager.config_version{
-                                                info!("asking for new config");
-                                                swarm.behaviour_mut().request_response.send_request(&peer, RobotRequest::GetSignedConfigMessage { } );
+
+                                            if let Some((config, signed_message)) = robot_manager.config_storage.get_config(&owner){
+                                                info!("config version {}", config.version);
+                                                if version<config.version{
+                                                    info!("sharing config");
+                                                    swarm.behaviour_mut().request_response.send_request(&peer, RobotRequest::ShareConfigMessage { signed_message} );
+                                                }
+                                            }else{
+                                                error!("No config");
                                             }
                                         },
-                                        RobotResponse::GetSignedConfigMessage{signed_message}=>{
-                                           info!("got config from peer {}", peer);
-                                           let robots = Arc::clone(&robots);
-                                           process_signed_message(serde_json::to_string(&signed_message)?, robots, to_message_tx.clone())
-                                        }
-                                        _=>{
+                                        _=>{}
 
-                                        }
                                     }
-
-
                                 },
 
                                 _=>{}
@@ -346,7 +353,11 @@ async fn start(
                     established_in
                 }=>{
                     info!("ConnectionEstablished: {peer_id} | {connection_id} | {endpoint:?} | {num_established} | {concurrent_dial_errors:?} | {established_in:?}");
-                    let get_config_version_req = RobotRequest::GetConfigVersion{};
+                    let robot_manager = robots.lock().unwrap();
+                    let version = robot_manager.config_version.clone();
+                    let owner = robot_manager.owner_public_key.clone();
+                    let get_config_version_req = RobotRequest::GetConfigVersion{version, owner};
+                    info!("Sending config version req {:?}", get_config_version_req);
                     swarm.behaviour_mut().request_response.send_request(&peer_id, get_config_version_req);
                 },
                 _ => {}
@@ -355,21 +366,38 @@ async fn start(
     }
 }
 
-pub async fn main_libp2p(
-    config: Config,
-    to_message_tx: broadcast::Sender<String>,
-    from_message_tx: broadcast::Sender<String>,
-    robots: Robots,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let _ = start(
-        config.identity,
-        config.libp2p_port,
-        config.bootstrap_addrs,
-        to_message_tx,
-        from_message_tx,
-        robots,
-    )
-    .await;
+pub async fn start_libp2p_thread(
+    from_message_tx: &broadcast::Sender<String>,
+    to_message_tx: &broadcast::Sender<String>,
+    robots: &Robots,
+    config: &Config,
+    args: &Args,
+) -> JoinHandle<()> {
+    let from_message_tx = from_message_tx.clone();
+    let to_message_tx = to_message_tx.clone();
+    let robots = Arc::clone(robots);
+    let config = config.clone();
+    let args = args.clone();
 
-    Ok(())
+    let libp2p_thread = tokio::spawn(async move {
+        info!("Start libp2p node");
+        match start(
+            config.identity,
+            config.libp2p_port,
+            config.bootstrap_addrs,
+            to_message_tx,
+            from_message_tx,
+            robots,
+            args,
+        )
+        .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                error!("LIBP2P MODULE PANIC: {:?}", err);
+            }
+        }
+    });
+
+    return libp2p_thread;
 }

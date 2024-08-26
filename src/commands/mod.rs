@@ -3,7 +3,6 @@ use tokio::sync::broadcast;
 
 use serde::{Deserialize, Serialize};
 
-use serde_json::json;
 use tokio::sync::broadcast::Sender;
 use tracing::{error, info};
 
@@ -61,8 +60,9 @@ pub enum TunnnelClient {
     },
 }
 
-pub async fn launch_new_job(robot_job: RobotJob, jobs: store::Jobs) {
+pub async fn launch_new_job(robot_job: RobotJob, jobs: &store::Jobs) {
     info!("{:?}", robot_job);
+    let jobs = Arc::clone(jobs);
     let mut job_manager = jobs.lock().unwrap();
     job_manager.new_job(
         robot_job.id.clone(),
@@ -125,8 +125,9 @@ pub async fn start_tunnel_messanger(
     }
 }
 
-pub async fn start_tunnel(tunnel_client: TunnnelClient, job_id: String, jobs: store::Jobs) {
+pub async fn start_tunnel(tunnel_client: TunnnelClient, job_id: String, jobs: &store::Jobs) {
     info!("Start tunnel request");
+    let jobs = Arc::clone(jobs);
     let mut job_manager = jobs.lock().unwrap();
 
     match job_manager.get_job_or_none(&job_id) {
@@ -157,10 +158,11 @@ pub async fn start_tunnel(tunnel_client: TunnnelClient, job_id: String, jobs: st
     }
 }
 
-pub async fn message_to_robot(message: MessageToRobot, jobs: store::Jobs) {
+pub async fn message_to_robot(message: MessageToRobot, jobs: &store::Jobs) {
     info!("Message to robot request");
 
     info!("Message to robot: {:?}", message);
+    let jobs = Arc::clone(jobs);
     let job_manager = jobs.lock().unwrap();
 
     if let Some(_job) = job_manager.get_job_or_none(&message.job_id) {

@@ -6,8 +6,8 @@ pub struct Args {
     #[arg(short = 'm', long, default_value = "normal")]
     pub mode: String,
 
-    #[arg(short = 's', long, default_value = "rn.socket")]
-    pub socket_filename: String,
+    #[arg(short = 's', long)]
+    pub socket_filename: Option<String>,
 
     #[arg(short = 'f', long, default_value = "rn.key")]
     pub key_filename: String,
@@ -17,6 +17,9 @@ pub struct Args {
 
     #[arg(short = 'l', long, default_value = "8765")]
     pub port_libp2p: String,
+
+    #[arg(short = 'r', long)]
+    pub rpc: Option<String>,
 
     #[arg(short = 'c', long, default_value = "rn.json")]
     pub config_path: String,

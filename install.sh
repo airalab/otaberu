@@ -1,4 +1,5 @@
-api_key=$1
+owner_public_key=$1
+secret_key=$2
 echo $api_key
 os=$(uname)
 architecture=$(uname -m)
@@ -9,7 +10,7 @@ if [[ "$os" == "Darwin" ]]; then
 fi
 
 username=$(whoami)
-agent_download_url="$(curl -s https://api.github.com/repos/merklebot/robot-agent/releases/latest | grep /robot-agent-$platform | cut -d : -f 2,3 | tr -d \")"
+agent_download_url="$(curl -s https://api.github.com/repos/otaberu/robot-agent/releases/latest | grep /robot-agent-$platform | cut -d : -f 2,3 | tr -d \")"
 
 
 
@@ -31,15 +32,15 @@ SERVICE_NAME=robot-agent.service
 
 echo "Creating systemd service"
 
-service_path=/etc/systemd/system/merklebot.service
+service_path=/etc/systemd/system/robotagent.service
 
 sudo tee -a $service_path << EOF
 [Unit]
-Description=Merklebot robot agent
+Description=Robot agent
 After=network.target
 
 [Service]
-ExecStart=$agent_binary_location -a $api_key
+ExecStart=$agent_binary_location -o $owner_public_key -k $secret_key
 Restart=on-failure
 
 [Install]
@@ -47,6 +48,6 @@ WantedBy=multi-user.target
 EOF
 
 
-sudo systemctl enable merklebot
-sudo systemctl start merklebot
+sudo systemctl enable robotagent 
+sudo systemctl start robotagent
 echo "Service Started"

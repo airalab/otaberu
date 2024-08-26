@@ -13,10 +13,7 @@ use base64::{engine::general_purpose, Engine as _};
 use crate::{
     commands::{RobotJob, RobotJobResult},
     store::Jobs,
-    utils::files::{
-        create_job_data_dir, get_files_in_directory_recursively, get_job_data_path,
-        get_data_path, upload_content,
-    },
+    utils::files::create_job_data_dir,
 };
 
 pub async fn execute_launch(robot_job: RobotJob, jobs: Jobs) {
@@ -111,7 +108,7 @@ impl DockerLaunch {
                 Ok(path) => {
                     info!("Sharing dir {}", path);
                     // 2. Share folder as volume
-                    volumes.push(format!("{}:{}", path, "/merklebot/job_data/"));
+                    volumes.push(format!("{}:{}", path, "/rn/job_data/"));
                 }
                 _ => {
                     error!("Couldn't create shared dir for job {}", robot_job.id);
@@ -230,7 +227,7 @@ impl DockerLaunch {
                                             }
                                         }
                                         crate::store::ChannelMessageToJob::ArchiveRequest {
-                                            path,
+                                            ..
                                         } => {}
                                     }
                                 }
@@ -298,8 +295,8 @@ impl DockerLaunch {
             status: String::from("done"),
             logs: concatenated_logs,
         };
-        let job_data_path = get_job_data_path(&robot_job.id);
-
+        //let job_data_path = get_job_data_path(&robot_job.id);
+        //
         // if let Some(true) = &self.args.store_data {
         //     match get_files_in_directory_recursively(&job_data_path) {
         //         //TODO: change to path
@@ -307,7 +304,7 @@ impl DockerLaunch {
         //             info!("{:?}", paths);
         //             for path in paths {
         //                 let path_str = path.as_path().display().to_string();
-        //                 let key = path_str.replace(&get_merklebot_data_path(), "");
+        //                 let key = path_str.replace(&get_rn_data_path(), "");
         //                 upload_content(
         //                     agent.robot_server_url.clone(),
         //                     path,

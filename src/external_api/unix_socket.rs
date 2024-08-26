@@ -1,59 +1,20 @@
+use super::messages::{process_command, MessageQueue, SocketCommand};
+use crate::cli::Args;
 use crate::store::Message;
-use crate::store::MessageContent;
 use crate::store::Robots;
 use crate::store::SignedMessage;
-use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 use tracing::{error, info};
-
-#[derive(Default)]
-pub struct MessageQueue {
-    messages: Vec<String>,
-    subscribers: Vec<UnixStream>,
-}
-impl MessageQueue {
-    pub fn add_subscriber(&mut self, stream: UnixStream) {
-        self.subscribers.push(stream);
-    }
-    pub fn add_message(&mut self, message: String) {
-        self.messages.push(message);
-    }
-
-    pub fn broadcast_messages(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        if let Some(last_message) = self.messages.last() {
-            let message_bytes = last_message.as_bytes();
-
-            for stream in &mut self.subscribers {
-                if let Err(err) = stream.try_write(message_bytes) {
-                    error!("Can't write message to socket {:?}", err);
-                }
-            }
-        }
-        Ok(())
-    }
-}
 
 #[derive(Default)]
 pub struct SocketServer {
     listener: Option<UnixListener>,
     message_queue: Arc<Mutex<MessageQueue>>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Content {
-    to: String,
-    content: MessageContent,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct SocketCommand {
-    action: String,
-    content: Option<Content>,
-    signed_message: Option<SignedMessage>,
 }
 
 impl SocketServer {
@@ -77,8 +38,10 @@ impl SocketServer {
         socket_filename: String,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         info!("Starting server");
-        if (self.create_listener(socket_filename).await).is_ok() {};
+        let from_message_tx = from_message_tx.clone();
+        let to_message_tx = to_message_tx.clone();
 
+        if (self.create_listener(socket_filename).await).is_ok() {};
         match &self.listener {
             Some(listener) => {
                 info!("Server started");
@@ -93,7 +56,7 @@ impl SocketServer {
                                     let stream_robots = Arc::clone(&robots);
                                     let message_queue= Arc::clone(&self.message_queue);
 
-                                    let _ = handle_stream(stream, message_queue, from_message_tx.clone(), stream_robots).await;
+                                    let _ = handle_stream(stream, message_queue, from_message_tx.clone(), stream_robots).await?;
                                 },
                                 Err(_)=>{
                                     error!("Error while accepting connection");
@@ -106,7 +69,7 @@ impl SocketServer {
                                     let mut msg_to_socket: Option<String> = None;
                                     if let Ok(message) = serde_json::from_str::<Message>(&msg){
                                         info!("socket received libp2p message: {:?}", message.content);
-                                        let content_serialized = message.content.serialize(serde_json::value::Serializer)?;
+                                        let content_serialized = serde_json::to_string(&message.content)?;
                                         msg_to_socket = Some(content_serialized.to_string());
                                     }else if let Ok(signed_message) = serde_json::from_str::<SignedMessage>(&msg){
                                         info!("socket received libp2p signed message: {:?}", signed_message);
@@ -116,7 +79,9 @@ impl SocketServer {
                                     if let Some(msg_to_socket) = msg_to_socket{
                                         let mut message_queue = message_queue_clone.lock().unwrap();
                                         message_queue.add_message(msg_to_socket);
-                                        message_queue.broadcast_messages()?;
+                                        if let Err(err) = message_queue.broadcast_messages(){
+                                            error!("Error while broadcasting messages: {:?}", err);
+                                        }
                                     }
                                 }
                                 Err(_) => {
@@ -128,7 +93,7 @@ impl SocketServer {
                 }
             }
             None => {
-                error!("Listener not initialized")
+                error!("Listener not initialized");
             }
         }
         Ok(())
@@ -140,67 +105,27 @@ async fn handle_stream(
     message_queue: Arc<Mutex<MessageQueue>>,
     from_message_tx: broadcast::Sender<String>,
     robots: Robots,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     stream.readable().await?;
     let mut data = vec![0; 65536];
+    let (subscriber_tx, mut subscriber_rx) = broadcast::channel::<String>(16);
+
     if let Ok(n) = stream.try_read(&mut data) {
         info!("read {} bytes", n);
         let message = std::str::from_utf8(&data[..n])?;
         info!("message: {}", message);
         match serde_json::from_str::<SocketCommand>(message) {
             Ok(command) => {
-                info!("command: {:?}", command);
-                match command.action.as_str() {
-                    "/me" => {
-                        info!("/me request");
-                    }
-                    "/local_robots" => {
-                        info!("/local_robots request");
-                        stream.writable().await?;
-                        let robots_manager = robots.lock().unwrap();
-                        let robots_text = robots_manager.clone().get_robots_json();
-                        info!("robots: {}", robots_text);
-                        match stream.try_write(&robots_text.into_bytes()) {
-                            Ok(_) => {}
-                            Err(err) => {
-                                error!("can't write /robots result to unix socket: {:?}", err)
-                            }
-                        }
-                    }
-                    "/send_message" => {
-                        if let Some(message_content) = command.content {
-                            let _ = from_message_tx.send(serde_json::to_string(&Message::new(
-                                message_content.content,
-                                "".to_string(),
-                                Some(message_content.to),
-                            ))?);
-                            info!("Sent from unix socket to libp2p");
-                            stream.writable().await?;
-                            stream.try_write(b"{\"ok\":true}")?;
-                        }
-                    }
-                    "/send_signed_message" => {
-                        if command.action == "/send_signed_message" {
-                            if let Some(signed_message) = command.signed_message {
-                                let _ =
-                                    from_message_tx.send(serde_json::to_string(&signed_message)?);
-                                info!("Sent from unix socket to libp2p");
-                                stream.writable().await?;
-                                if let Err(_err) = stream.try_write(b"{\"ok\":true}") {
-                                    error!(
-                                        "Can't write /send_signed_message result to unix socket"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    "/subscribe_messages" => {
-                        info!("/subscribe_messages request");
-                        stream.writable().await?;
-                        stream.try_write(b"{\"ok\":true}")?;
-                        message_queue.lock().unwrap().add_subscriber(stream);
-                    }
-                    _ => {}
+                let answer = process_command(
+                    command,
+                    subscriber_tx,
+                    robots,
+                    &from_message_tx,
+                    message_queue,
+                )?;
+                stream.writable().await?;
+                if let Err(err) = stream.try_write(&answer.into_bytes()) {
+                    error!("Can't write command answer to unix socket: {:?}", err);
                 }
             }
             Err(err) => {
@@ -209,5 +134,47 @@ async fn handle_stream(
             }
         }
     }
-    Ok(())
+    loop {
+        select! {
+            msg = subscriber_rx.recv()=>{
+                if let Ok(msg) = msg{
+                    info!("Got subscriber msg: {}", msg);
+                    stream.writable().await?;
+                    if let Err(err) = stream.try_write(&msg.into_bytes()){
+                        error!("Error while sending message to subscriber socket: {:?}", err);
+                    }
+                }
+
+
+            }
+        }
+    }
+}
+
+pub async fn start_unix_socket_thread(
+    from_message_tx: &broadcast::Sender<String>,
+    to_message_tx: &broadcast::Sender<String>,
+    robots: &Robots,
+    args: &Args,
+) -> JoinHandle<()> {
+    let mut socket_server = SocketServer::default();
+    let from_message_tx = from_message_tx.clone();
+    let to_message_tx = to_message_tx.clone();
+    let robots = Arc::clone(&robots);
+
+    let unix_socket_filename = args.socket_filename.clone().unwrap();
+    let unix_socket_thread = tokio::spawn(async move {
+        info!("Start unix socket server");
+        match socket_server
+            .start(from_message_tx, to_message_tx, robots, unix_socket_filename)
+            .await
+        {
+            Ok(_) => {}
+            Err(err) => {
+                error!("UNIX SOCKET MODULE PANIC: {:?}", err);
+            }
+        }
+    });
+
+    return unix_socket_thread;
 }
