@@ -1,8 +1,9 @@
 ## About Robot Agent
-Robot Agent enables device-to-device communication based on [libp2p protocol](https://libp2p.io). With Robot Agent, you can organize geographically dispersed robotic operations easily. The software facilitates setup of CI/CD and data management pipelines, all while ensuring secure networking.
+Robot-agent is an open-source dev tool to setup scalable peer-to-peer network for edge devices and manage data and CI/CD pipelines over it. It is based on [libp2p protocol](https://libp2p.io), offering pub-sub message passing, built-in encryption, and NAT traversal, among other useful features. 
 
-Currently, it supports sending Docker jobs to devices via libp2p and allows direct connection to these jobs through a CLI terminal. CLI tool with terminal UI is a convenient way to manage the robots in your fleet: logs, media data, Docker containers and configs. 
+You can use it on-prem without internet access to update the code/configs and get the data from your fleet, using CLI tool with terminalUI. Or in a distributed network across many deployment locations and in the cloud, with the same level of security and no additional setup. It can scale to millions of nodes and its underlying protocol is used daily in some of the largest distributed systems including Ethereum, IPFS, Polkadot, and Filecoin. 
 
+This tool is ideal for roboticists and developers looking to create distributed, scalable systems where agents can collaborate and have adaptable mesh networks with minimal manual configuration. It is also a great way to enable secure, cross-fleet communication between devices owned by different organizations.
 
 ## Download agent
 Download agent from https://github.com/otaberu/robot-agent/releases/latest for your platform architecture
