@@ -7,8 +7,8 @@ use tokio::sync::broadcast::Sender;
 use tracing::{error, info};
 
 use crate::store;
-use crate::store::ChannelMessageFromJob;
-use crate::store::Message;
+use crate::store::messages::{Message, ChannelMessageFromJob};
+use crate::store::job_manager::Jobs;
 
 mod docker;
 
@@ -60,7 +60,7 @@ pub enum TunnnelClient {
     },
 }
 
-pub async fn launch_new_job(robot_job: RobotJob, jobs: &store::Jobs) {
+pub async fn launch_new_job(robot_job: RobotJob, jobs: &Jobs) {
     info!("{:?}", robot_job);
     let jobs = Arc::clone(jobs);
     let mut job_manager = jobs.lock().unwrap();
@@ -100,7 +100,7 @@ pub async fn start_tunnel_messanger(
                         info!("sending stdout: {:?}", stdout);
                         let _ = from_robot_tx.send(
                             serde_json::to_string(&Message::new(
-                                store::MessageContent::TunnelResponseMessage {
+                                store::messages::MessageContent::TunnelResponseMessage {
                                     job_id: job_id.clone(),
                                     message: ChannelMessageFromJob::TerminalMessage(stdout),
                                 },
@@ -125,7 +125,7 @@ pub async fn start_tunnel_messanger(
     }
 }
 
-pub async fn start_tunnel(tunnel_client: TunnnelClient, job_id: String, jobs: &store::Jobs) {
+pub async fn start_tunnel(tunnel_client: TunnnelClient, job_id: String, jobs: &Jobs) {
     info!("Start tunnel request");
     let jobs = Arc::clone(jobs);
     let mut job_manager = jobs.lock().unwrap();
@@ -158,7 +158,7 @@ pub async fn start_tunnel(tunnel_client: TunnnelClient, job_id: String, jobs: &s
     }
 }
 
-pub async fn message_to_robot(message: MessageToRobot, jobs: &store::Jobs) {
+pub async fn message_to_robot(message: MessageToRobot, jobs: &Jobs) {
     info!("Message to robot request");
 
     info!("Message to robot: {:?}", message);
@@ -171,12 +171,12 @@ pub async fn message_to_robot(message: MessageToRobot, jobs: &store::Jobs) {
                 match content {
                     MessageContent::Terminal { stdin } => {
                         channel
-                            .send(store::ChannelMessageToJob::TerminalMessage(stdin))
+                            .send(store::messages::ChannelMessageToJob::TerminalMessage(stdin))
                             .unwrap();
                     }
                     MessageContent::Archive { dest_path, data } => {
                         channel
-                            .send(store::ChannelMessageToJob::ArchiveMessage {
+                            .send(store::messages::ChannelMessageToJob::ArchiveMessage {
                                 encoded_tar: data,
                                 path: dest_path,
                             })

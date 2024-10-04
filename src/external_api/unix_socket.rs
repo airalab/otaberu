@@ -1,8 +1,7 @@
 use super::messages::{process_command, MessageQueue, SocketCommand};
 use crate::cli::Args;
-use crate::store::Message;
-use crate::store::Robots;
-use crate::store::SignedMessage;
+use crate::store::messages::{Message, SignedMessage};
+use crate::store::robot_manager::Robots;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 use tokio::net::{UnixListener, UnixStream};

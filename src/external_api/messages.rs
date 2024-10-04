@@ -1,7 +1,5 @@
-use crate::store::Message;
-use crate::store::MessageContent;
-use crate::store::Robots;
-use crate::store::SignedMessage;
+use crate::store::messages::{Message, MessageContent, SignedMessage};
+use crate::store::robot_manager::Robots;
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -94,6 +92,13 @@ pub fn process_command(
             } else {
                 answer = Some("{\"ok\":false}".to_string());
             }
+        }
+        "/network_info"=>{
+            info!("/network_info request");
+            let robots_manager = robots.lock().unwrap();
+            let network_info_text = serde_json::to_string(&robots_manager.network_manager.peers_info)?;
+            info!("{}", network_info_text);
+            answer = Some(network_info_text)
         }
         "/send_message" => {
             if let Some(message_content) = command.content {

@@ -12,7 +12,7 @@ use base64::{engine::general_purpose, Engine as _};
 
 use crate::{
     commands::{RobotJob, RobotJobResult},
-    store::Jobs,
+    store::job_manager::Jobs,
     utils::files::create_job_data_dir,
 };
 
@@ -185,14 +185,14 @@ impl DockerLaunch {
                                 loop {
                                     let channel_message = channel_to_job_rx.recv().await.unwrap();
                                     match channel_message {
-                                        crate::store::ChannelMessageToJob::TerminalMessage(
+                                        crate::store::messages::ChannelMessageToJob::TerminalMessage(
                                             data,
                                         ) => {
                                             for byte in data.as_bytes().iter() {
                                                 input.write_all(&[*byte]).await.ok();
                                             }
                                         }
-                                        crate::store::ChannelMessageToJob::ArchiveMessage {
+                                        crate::store::messages::ChannelMessageToJob::ArchiveMessage {
                                             encoded_tar,
                                             path,
                                         } => {
@@ -226,7 +226,7 @@ impl DockerLaunch {
                                                 info!("Error while decoded tar");
                                             }
                                         }
-                                        crate::store::ChannelMessageToJob::ArchiveRequest {
+                                        crate::store::messages::ChannelMessageToJob::ArchiveRequest {
                                             ..
                                         } => {}
                                     }
@@ -249,7 +249,7 @@ impl DockerLaunch {
                         while let Some(Ok(output)) = output.next().await {
                             let job_manager = shared_jobs.lock().unwrap();
                             if let Some(tx) = job_manager.get_channel_from_job(&robot_job.id) {
-                                tx.send(crate::store::ChannelMessageFromJob::TerminalMessage(
+                                tx.send(crate::store::messages::ChannelMessageFromJob::TerminalMessage(
                                     output.to_string(),
                                 ))
                                 .unwrap();

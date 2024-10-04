@@ -1,11 +1,9 @@
 use crate::cli::Args;
-use crate::store::Config;
-use crate::store::Message;
-use crate::store::MessageContent;
-use crate::store::RobotRequest;
-use crate::store::RobotResponse;
-use crate::store::Robots;
-use crate::store::SignedMessage;
+
+use crate::store::key_manager::KeyConfig;
+use crate::store::messages::{Message, MessageContent, RobotRequest, RobotResponse, SignedMessage};
+use crate::store::robot_manager::{Robots};
+
 
 use futures::stream::StreamExt;
 use libp2p::PeerId;
@@ -370,7 +368,7 @@ pub async fn start_libp2p_thread(
     from_message_tx: &broadcast::Sender<String>,
     to_message_tx: &broadcast::Sender<String>,
     robots: &Robots,
-    config: &Config,
+    config: &KeyConfig,
     args: &Args,
 ) -> JoinHandle<()> {
     let from_message_tx = from_message_tx.clone();

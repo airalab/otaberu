@@ -11,6 +11,8 @@ use tracing_subscriber::FmtSubscriber;
 
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
+use store::key_manager::KeyConfig;
+use store::robot_manager::{RobotsManager, Robots};
 
 pub mod cli;
 pub mod commands;
@@ -20,8 +22,8 @@ pub mod node;
 pub mod store;
 pub mod utils;
 
-pub fn generate_key_file(key_filename: String) -> store::Config {
-    let config = store::Config::generate();
+pub fn generate_key_file(key_filename: String) -> store::key_manager::KeyConfig {
+    let config = store::key_manager::KeyConfig::generate();
     let _ = config.save_to_file(key_filename.clone());
     info!("Generated new key and saved it to {}", key_filename);
 
@@ -40,13 +42,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let mut config: store::Config = store::Config::generate();
+    let mut config: KeyConfig = KeyConfig::generate();
     match args.clone().secret_key {
         Some(secret_key_string) => {
-            config = store::Config::load_from_sk_string(secret_key_string)?;
+            config = KeyConfig::load_from_sk_string(secret_key_string)?;
         }
         None => {
-            let config_load_res = store::Config::load_from_file(args.key_filename.clone());
+            let config_load_res = KeyConfig::load_from_file(args.key_filename.clone());
             match config_load_res {
                 Ok(loaded_config) => {
                     config = loaded_config;
@@ -61,7 +63,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         error!("Can't write key to file {:?}", err);
     }
 
-    let mut robot_manager = store::RobotsManager {
+    let mut robot_manager = RobotsManager {
         self_peer_id: config.get_peer_id(),
         ..Default::default()
     };
@@ -87,7 +89,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         _ => {}
     }
 
-    let robots: store::Robots = Arc::new(Mutex::new(robot_manager));
+    let robots: Robots = Arc::new(Mutex::new(robot_manager));
 
     let libp2p_port = args.port_libp2p.parse::<u16>().unwrap();
     config.set_libp2p_port(libp2p_port);

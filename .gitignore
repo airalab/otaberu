@@ -6,4 +6,5 @@ debug/
 .DS_Store
 *.key
 script.py
+scripts
 

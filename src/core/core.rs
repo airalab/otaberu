@@ -1,19 +1,17 @@
-use crate::store::Message;
-use crate::store::MessageContent;
-use crate::store::MessageRequest;
-use crate::store::MessageResponse;
-use crate::store::RobotRole;
-use crate::store::SignedMessage;
+use crate::store::messages::{Message, MessageContent, MessageRequest, MessageResponse, SignedMessage};
+use crate::store::robot_manager::{RobotRole, Robots};
+use crate::store::job_manager::{JobManager, Jobs};
 
 use crate::commands;
 
 use crate::cli::Args;
-use crate::store::{JobManager, Jobs, Robots};
 use std::sync::{Arc, Mutex};
 use tokio::select;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
+use tokio::time::{interval, Duration};
+
 
 use std::error::Error;
 
@@ -27,6 +25,8 @@ pub async fn main_normal(
 
     let mut to_message_rx = to_message_tx.subscribe();
 
+    let mut handshake_timer = interval(Duration::from_secs(30)); 
+
     loop {
         select! {
             msg = to_message_rx.recv()=>match msg{
@@ -39,6 +39,7 @@ pub async fn main_normal(
                         let robot_manager = robots.lock().unwrap();
                         if message.to.unwrap_or("".to_string()) == robot_manager.self_peer_id
                             || matches!(message.content, MessageContent::UpdateConfig { .. })
+                             
                         {
                             let role = robot_manager.get_role(signed_message.public_key);
                             info!("role: {:?}", role);
@@ -48,6 +49,9 @@ pub async fn main_normal(
                                 should_process = true
                             }
                         }
+                    }
+                    if matches!(message.content, MessageContent::Handshake {  }){
+                        should_process = true;
                     }
                     info!("should process {}", should_process);
 
@@ -116,6 +120,17 @@ pub async fn main_normal(
                                     ))?);
                                 }
                             },
+                            MessageContent::Handshake{}=>{
+                                let identity =
+                                    libp2p::identity::ed25519::PublicKey::try_from_bytes(&signed_message.public_key)?;
+                                let public_key: libp2p::identity::PublicKey = identity.into();
+                                let peer_id = public_key.to_peer_id();
+                                let from = peer_id.to_base58();
+                                info!("Got handshake from {}", from);
+                                let mut robot_manager = robots.lock().unwrap();
+                                robot_manager.network_manager.process_handshake(from);
+                                
+                            }
                             _=>{}
                         }
                     }
@@ -124,6 +139,20 @@ pub async fn main_normal(
                     error!("error while socket receiving libp2p message");
                 }
             },
+            _ = handshake_timer.tick()=>{
+            
+                let message_content = MessageContent::Handshake {  };
+                let _ = from_message_tx.send(serde_json::to_string(&Message::new(
+                    message_content,
+                    "".to_string(),
+                    None
+                ))?);
+
+                let mut robot_manager = robots.lock().unwrap();
+                robot_manager.network_manager.clean_old_handshakes();
+
+
+            }
         }
     }
 }

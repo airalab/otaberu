@@ -1,5 +1,5 @@
 use crate::cli::Args;
-use crate::store::Robots;
+use crate::store::robot_manager::Robots;
 use futures::SinkExt;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
