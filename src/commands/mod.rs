@@ -10,7 +10,7 @@ use crate::store;
 use crate::store::messages::{Message, ChannelMessageFromJob};
 use crate::store::job_manager::Jobs;
 
-mod docker;
+pub mod docker;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StartTunnelReq {
@@ -170,17 +170,19 @@ pub async fn message_to_robot(message: MessageToRobot, jobs: &Jobs) {
             if let Ok(content) = serde_json::from_value::<MessageContent>(message.content) {
                 match content {
                     MessageContent::Terminal { stdin } => {
-                        channel
-                            .send(store::messages::ChannelMessageToJob::TerminalMessage(stdin))
-                            .unwrap();
+                        if let Err(err) = channel
+                            .send(store::messages::ChannelMessageToJob::TerminalMessage(stdin)){
+                                error!("Error while sending message to channel: {}", err);
+                        }
                     }
                     MessageContent::Archive { dest_path, data } => {
-                        channel
+                        if let Err(err) = channel
                             .send(store::messages::ChannelMessageToJob::ArchiveMessage {
                                 encoded_tar: data,
                                 path: dest_path,
-                            })
-                            .unwrap();
+                            }){
+                                error!("Error while sending message to channel: {}", err);
+                        }
                     }
                 }
             }

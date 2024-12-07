@@ -3,6 +3,7 @@ use bollard::Docker;
 use futures_util::{StreamExt, TryStreamExt};
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
+use std::path::PathBuf;
 
 use tracing::{error, info};
 
@@ -12,7 +13,7 @@ use base64::{engine::general_purpose, Engine as _};
 
 use crate::{
     commands::{RobotJob, RobotJobResult},
-    store::job_manager::Jobs,
+    store::{job_manager::{DockerJobInfo, JobInfo, Jobs, JobManager}, robot_manager},
     utils::files::create_job_data_dir,
 };
 
@@ -38,16 +39,12 @@ pub async fn execute_launch(robot_job: RobotJob, jobs: Jobs) {
         };
         let mut job_manager = jobs.lock().unwrap();
         job_manager.set_job_result(robot_job_result);
+        
+        // Add persistence
+        if let Err(e) = job_manager.save_jobs_to_disk(&PathBuf::from("jobs.json")) {
+            error!("Failed to persist jobs: {:?}", e);
+        }
     }
-
-    // match socket {
-    //     Some(socket) => {
-    //         let _ = socket
-    //             .emit("job_done", serde_json::json!(robot_job_result))
-    //             .await;
-    //     }
-    //     None => {}
-    // }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -74,11 +71,11 @@ pub struct DockerLaunch {
 }
 
 impl DockerLaunch {
-    pub async fn execute(
+    pub async fn start_job(
         &self,
-        robot_job: RobotJob,
-        jobs: Jobs,
-    ) -> Result<RobotJobResult, bollard::errors::Error> {
+        robot_job: &RobotJob,
+    )-> Result<String, bollard::errors::Error> {
+
         info!("launching docker with image {}", self.args.image);
         let docker = Docker::connect_with_socket_defaults().unwrap();
         info!("docker init");
@@ -148,14 +145,78 @@ impl DockerLaunch {
         info!("created container with id {}", id);
 
         docker.start_container::<String>(&id, None).await?;
+        
+        return Ok(id);
+    }
+
+    pub async fn execute(  
+        &self,
+        robot_job: RobotJob,
+        jobs: Jobs,
+    ) -> Result<RobotJobResult, bollard::errors::Error> {
+        let container_id = self.start_job(&robot_job).await?;
+        self.execute_with_container(container_id, robot_job, jobs).await
+    }
+
+    pub async fn execute_with_container(  
+        &self,
+        container_id: String,
+        robot_job: RobotJob,
+        jobs: Jobs,
+    ) -> Result<RobotJobResult, bollard::errors::Error> {
+        let docker = Docker::connect_with_socket_defaults().unwrap();
+
+        let mut job_info = DockerJobInfo {
+            container_id: container_id.clone(),
+            image: self.args.image.clone(),
+            docker_status: None,
+            last_logs: None,
+            custom_cmd: self.args.custom_cmd.clone(),
+            save_logs: self.args.save_logs,
+            store_data: self.args.store_data,
+            network_mode: Some(self.args.network_mode.clone()),
+            ports: Some(self.args.ports.clone()),
+            volumes: Some(self.args.volumes.clone()),
+            env: Some(self.args.env.clone()),
+            privileged: Some(self.args.privileged),
+        };
+
+        {
+            let mut job_manager = jobs.lock().unwrap();
+            job_manager.set_job_info(&robot_job.id, JobInfo::DockerJobInfo(job_info.clone()));
+        }
+
+        // Add status monitoring
+        {
+            let container_id = container_id.clone();
+            let shared_jobs = Arc::clone(&jobs);
+            let job_id = robot_job.id.clone();
+            
+            tokio::task::spawn(async move {
+                let docker = Docker::connect_with_socket_defaults().unwrap();
+                loop {
+                    if let Ok(info) = docker.inspect_container(&container_id, None).await {
+                        let status = info.state
+                            .and_then(|s| s.status)
+                            .unwrap_or_else(|| bollard::models::ContainerStateStatusEnum::EMPTY)
+                            .to_string();
+                        let mut job_manager = shared_jobs.lock().unwrap();
+                        if let Some(JobInfo::DockerJobInfo(mut docker_info)) = job_manager.get_job_info(&job_id) {
+                            docker_info.docker_status = Some(status);
+                            job_manager.set_job_info(&job_id, JobInfo::DockerJobInfo(docker_info));
+                        }
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            });
+        }
 
         let mut concatenated_logs: String = String::new();
-        let container_id = id.clone();
         match &self.args.custom_cmd {
             Some(_custom_cmd) => {
                 let exec = docker
                     .create_exec(
-                        &id,
+                        &container_id,
                         bollard::exec::CreateExecOptions {
                             attach_stdout: Some(true),
                             attach_stderr: Some(true),
@@ -174,6 +235,7 @@ impl DockerLaunch {
                     mut input,
                 } = docker.start_exec(&exec, None).await?
                 {
+                    let container_id = container_id.clone();
                     // pipe stdin into the docker exec stream input
                     {
                         let shared_jobs = Arc::clone(&jobs);
@@ -269,7 +331,7 @@ impl DockerLaunch {
                         ..Default::default()
                     };
 
-                let mut logs = docker.logs(&id, Some(logs_options));
+                let mut logs = docker.logs(&container_id, Some(logs_options));
 
                 while let Some(log) = logs.try_next().await? {
                     concatenated_logs
@@ -277,19 +339,25 @@ impl DockerLaunch {
                 }
 
                 info!("log: {}", concatenated_logs);
+                job_info.last_logs = Some(concatenated_logs.clone());
             }
         }
 
         docker
             .remove_container(
-                &id.clone(),
+                &container_id.clone(),
                 Some(bollard::container::RemoveContainerOptions {
                     force: true,
                     ..Default::default()
                 }),
             )
             .await?;
+        job_info.docker_status = Some("removed".to_owned());
 
+        {
+            let mut job_manager = jobs.lock().unwrap();
+            job_manager.set_job_info(&robot_job.id, JobInfo::DockerJobInfo(job_info.clone()));
+        }
         let robot_job_result = RobotJobResult {
             job_id: robot_job.id.clone(),
             status: String::from("done"),
@@ -322,4 +390,54 @@ impl DockerLaunch {
         // }
         Ok(robot_job_result)
     }
+}
+
+pub async fn restore_jobs(jobs: Jobs) -> Result<(), Box<dyn std::error::Error>> {
+    let jobs_path = PathBuf::from("jobs.json");
+    
+    if !jobs_path.exists() {
+        return Ok(());
+    }
+
+    let persistent_jobs = JobManager::load_jobs_from_disk(&jobs_path)?;
+    info!("Restoring {} jobs", persistent_jobs.len());
+    for job_data in persistent_jobs {
+        if let Some(ref docker_info) = job_data.docker_info {
+            info!("Restoring job {:?}", job_data);
+            let robot_job = RobotJob {
+                id: job_data.job_id.clone(),
+                robot_id: "".to_string(),
+                job_type: job_data.job_type,
+                status: job_data.status,
+                args: serde_json::to_string(&DockerLaunchArgs {
+                    image: docker_info.image.clone(),
+                    container_name: format!("restored_{}", job_data.job_id),
+                    custom_cmd: docker_info.custom_cmd.clone(),
+                    save_logs: docker_info.save_logs,
+                    store_data: docker_info.store_data,
+                    network_mode: docker_info.network_mode.clone().unwrap_or("default".to_string()),
+                    ports: docker_info.ports.clone().unwrap_or_default(),
+                    volumes: docker_info.volumes.clone().unwrap_or_default(),
+                    env: docker_info.env.clone().unwrap_or_default(),
+                    privileged: docker_info.privileged.unwrap_or(false),
+                })?,
+            };
+
+            {
+                let mut job_manager = jobs.lock().unwrap();
+                job_manager.new_job(
+                    robot_job.id.clone(),
+                    robot_job.job_type.clone(),
+                    robot_job.status.clone(),
+                );
+                job_manager.set_job_info(
+                    &robot_job.id,
+                    JobInfo::DockerJobInfo(docker_info.clone()),
+                );
+                info!("Job: {:?}", job_manager.get_job_info(&robot_job.id));
+            }
+        }
+    }
+
+    Ok(())
 }

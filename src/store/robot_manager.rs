@@ -1,16 +1,16 @@
-use serde::{Deserialize, Serialize};
-use std::error::Error;
 use base64::{engine::general_purpose, Engine as _};
-use std::collections::HashMap;
-use tracing::info;
-use std::fs::{self};
 use libp2p::{Multiaddr, PeerId};
+use serde::{Deserialize, Serialize};
 use std::any::Any;
+use std::collections::HashMap;
+use std::error::Error;
+use std::fs::{self};
 use std::sync::{Arc, Mutex};
+use tracing::info;
 
-use super::messages::{SignedMessage};
-use super::network_manager::{NetworkManager};
-use super::config::{RobotsConfig, ConfigStorage};
+use super::config::{ConfigStorage, RobotsConfig};
+use super::messages::SignedMessage;
+use super::network_manager::NetworkManager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RobotRole {
@@ -58,7 +58,6 @@ impl User {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub struct RobotInterface {
     pub ip4: String,
@@ -69,8 +68,6 @@ pub struct RobotsManagerDump {
     config: RobotsConfig,
     config_message: SignedMessage,
 }
-
-
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct RobotsManager {
@@ -84,7 +81,7 @@ pub struct RobotsManager {
     pub peer_id_to_ip: HashMap<String, String>,
     pub peers: Vec<PeerId>,
     pub config_storage: ConfigStorage,
-    pub network_manager: NetworkManager
+    pub network_manager: NetworkManager,
 }
 
 impl RobotsManager {
@@ -104,7 +101,6 @@ impl RobotsManager {
         // }
         self.users.insert(user.public_key.clone(), user);
     }
-
 
     /// Sets the robots configuration
     pub fn set_robots_config(&mut self, config: RobotsConfig, signed_message: SignedMessage) {
@@ -168,6 +164,10 @@ impl RobotsManager {
 
     pub fn set_peers(&mut self, peers: Vec<PeerId>) {
         self.peers = peers
+    }
+
+    pub fn get_peers(&self) -> Vec<PeerId> {
+        self.peers.clone()
     }
 
     pub fn set_owner(&mut self, owner_b64: String) -> Result<(), Box<dyn Error>> {
@@ -261,7 +261,6 @@ impl RobotsManager {
         serde_json::to_string(&self).unwrap()
     }
 }
-
 
 /// Type alias for thread-safe access to RobotsManager
 pub type Robots = Arc<Mutex<RobotsManager>>;

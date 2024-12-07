@@ -36,18 +36,39 @@ impl MessageQueue {
     }
 
     pub fn broadcast_messages(&mut self) -> Result<(), broadcast::error::SendError<String>> {
-        if let Some(last_message) = self.messages.last() {
-            let last_message = match serde_json::from_str::<SignedMessage>(&last_message) {
-                Ok(signed_message) => signed_message.message,
-                _ => last_message.clone(),
+        if let Some(last_message_serialized) = self.messages.last() {
+            let mut to: Option<String> = None;
+            info!("last message {}", last_message_serialized);
+            let last_message = match serde_json::from_str::<SignedMessage>(&last_message_serialized)
+            {
+                Ok(signed_message) => {
+                    to = signed_message.to;
+                    signed_message.message
+                }
+                _ => last_message_serialized.clone(),
             };
-            if let Ok(message) = serde_json::from_str::<Message>(&last_message) {
-                info!("socket received libp2p message: {:?}", message);
-                if let Ok(_content_serialized) = serde_json::to_string(&message.content) {
-                    if let Some(peer_id) = message.to {
-                        if let Some(tx) = self.subscribers.get(&peer_id) {
-                            if let Err(err) = tx.send(last_message.clone()) {
-                                error!("Error while sending message to ws tx: {:?}", err);
+
+            info!("to: {:?}", to);
+            match to {
+                Some(to) => {
+                    info!("subscribers: {:?}", self.subscribers);
+                    if let Some(tx) = self.subscribers.get(&to) {
+                        info!("Sending message to {}", to);
+                        if let Err(err) = tx.send(last_message_serialized.clone()) {
+                            error!("Error while sending message to ws tx: {:?}", err);
+                        }
+                    }
+                }
+                None => {
+                    if let Ok(message) = serde_json::from_str::<Message>(&last_message) {
+                        info!("socket received libp2p message: {:?}", message);
+                        if let Ok(_content_serialized) = serde_json::to_string(&message.content) {
+                            if let Some(peer_id) = message.to {
+                                if let Some(tx) = self.subscribers.get(&peer_id) {
+                                    if let Err(err) = tx.send(last_message.clone()) {
+                                        error!("Error while sending message to ws tx: {:?}", err);
+                                    }
+                                }
                             }
                         }
                     }
@@ -93,10 +114,11 @@ pub fn process_command(
                 answer = Some("{\"ok\":false}".to_string());
             }
         }
-        "/network_info"=>{
+        "/network_info" => {
             info!("/network_info request");
             let robots_manager = robots.lock().unwrap();
-            let network_info_text = serde_json::to_string(&robots_manager.network_manager.peers_info)?;
+            let network_info_text =
+                serde_json::to_string(&robots_manager.network_manager.peers_info)?;
             info!("{}", network_info_text);
             answer = Some(network_info_text)
         }

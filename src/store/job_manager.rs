@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use super::messages::{ChannelMessageFromJob, ChannelMessageToJob};
 use crate::commands::RobotJobResult;
+use std::fs;
+use std::path::PathBuf;
+use tracing::error;
+use crate::commands::docker::DockerMap;
 
 /// Represents a tunnel for job communication
 #[derive(Debug, Clone, Serialize)]
@@ -16,9 +20,32 @@ pub struct JobProcess {
     pub job_id: String,
     pub job_type: String,
     pub status: String,
+    pub job_info: Option<JobInfo>, 
     pub channel_tx: Option<broadcast::Sender<ChannelMessageFromJob>>,
     pub channel_to_job_tx: broadcast::Sender<ChannelMessageToJob>,
     pub tunnel: Option<Tunnel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DockerJobInfo{
+    pub container_id: String,
+    pub image: String,
+    pub docker_status: Option<String>,
+    pub last_logs: Option<String>,
+    pub custom_cmd: Option<String>,
+    pub save_logs: Option<bool>,
+    pub store_data: Option<bool>,
+    pub network_mode: Option<String>,
+    pub ports: Option<Vec<DockerMap>>,
+    pub volumes: Option<Vec<DockerMap>>,
+    pub env: Option<Vec<String>>,
+    pub privileged: Option<bool>,
+}   
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag="job_type")]
+pub enum JobInfo{
+    DockerJobInfo(DockerJobInfo)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +71,14 @@ pub struct JobManager {
     pub data: HashMap<String, JobProcess>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistentJobData {
+    pub job_id: String,
+    pub job_type: String,
+    pub status: String,
+    pub docker_info: Option<DockerJobInfo>,
+}
+
 impl JobManager {
     /// Creates a new job
     pub fn new_job(&mut self, job_id: String, job_type: String, status: String) {
@@ -56,6 +91,7 @@ impl JobManager {
                 job_id,
                 job_type,
                 status,
+                job_info: None,
                 channel_tx: None,
                 channel_to_job_tx: channel_to_job_tx.clone(),
                 tunnel: None,
@@ -82,6 +118,24 @@ impl JobManager {
     pub fn get_jobs_info(&self) -> Vec<JobProcessData> {
         return self.data.clone().into_values().map(|x| x.into()).collect();
     }
+
+    pub fn set_job_info(&mut self, job_id: &String, job_info: JobInfo){
+        let process = self.data.get_mut(job_id);
+        match process {
+            Some(process) => {
+                process.job_info = Some(job_info);
+            }
+            None => {}
+        }
+    }
+    
+    pub fn get_job_info(&self, job_id: &String)->Option<JobInfo>{
+        if let Some(process) = self.get_job_or_none(job_id){
+            return process.job_info;
+        }
+        return None;
+    }
+
     pub fn set_job_status(&mut self, job_id: String, status: String) {
         let process = self.data.get_mut(&job_id);
         match process {
@@ -124,6 +178,33 @@ impl JobManager {
             Some(job) => Some(job.channel_to_job_tx.clone()),
             None => None,
         }
+    }
+
+    pub fn save_jobs_to_disk(&self, path: &PathBuf) -> Result<(), std::io::Error> {
+        let persistent_jobs: Vec<PersistentJobData> = self.data.values()
+            .filter_map(|job| {
+                if let Some(JobInfo::DockerJobInfo(docker_info)) = &job.job_info {
+                    Some(PersistentJobData {
+                        job_id: job.job_id.clone(),
+                        job_type: job.job_type.clone(),
+                        status: job.status.clone(),
+                        docker_info: Some(docker_info.clone()),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let json = serde_json::to_string(&persistent_jobs)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn load_jobs_from_disk(path: &PathBuf) -> Result<Vec<PersistentJobData>, Box<dyn std::error::Error>> {
+        let data = fs::read_to_string(path)?;
+        let jobs: Vec<PersistentJobData> = serde_json::from_str(&data)?;
+        Ok(jobs)
     }
 }
 

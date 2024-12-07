@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::path::PathBuf;
 
 use core::start_core_thread;
 use external_api::{start_unix_socket_thread, start_web_socket_thread};
@@ -13,6 +14,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use store::key_manager::KeyConfig;
 use store::robot_manager::{RobotsManager, Robots};
+use store::job_manager::{JobManager, Jobs};
+use commands::docker::restore_jobs;
 
 pub mod cli;
 pub mod commands;
@@ -90,6 +93,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let robots: Robots = Arc::new(Mutex::new(robot_manager));
+    let jobs: Jobs = Arc::new(Mutex::new(JobManager::default()));
+    if let Err(e) = restore_jobs(Arc::clone(&jobs)).await {
+        error!("Failed to restore jobs {:?}", e);
+    }
 
     let libp2p_port = args.port_libp2p.parse::<u16>().unwrap();
     config.set_libp2p_port(libp2p_port);

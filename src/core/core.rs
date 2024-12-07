@@ -1,6 +1,8 @@
-use crate::store::messages::{Message, MessageContent, MessageRequest, MessageResponse, SignedMessage};
-use crate::store::robot_manager::{RobotRole, Robots};
 use crate::store::job_manager::{JobManager, Jobs};
+use crate::store::messages::{
+    Message, MessageContent, MessageRequest, MessageResponse, SignedMessage, VerifiableMessage,
+};
+use crate::store::robot_manager::{self, RobotRole, Robots};
 
 use crate::commands;
 
@@ -9,9 +11,8 @@ use std::sync::{Arc, Mutex};
 use tokio::select;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
 use tokio::time::{interval, Duration};
-
+use tracing::{debug, error, info};
 
 use std::error::Error;
 
@@ -25,24 +26,35 @@ pub async fn main_normal(
 
     let mut to_message_rx = to_message_tx.subscribe();
 
-    let mut handshake_timer = interval(Duration::from_secs(30)); 
+    let mut handshake_timer = interval(Duration::from_secs(15));
 
     loop {
         select! {
             msg = to_message_rx.recv()=>match msg{
                 Ok(msg)=>{
                     let signed_message = serde_json::from_str::<SignedMessage>(&msg)?;
+                    let self_peer_id: String;
+                    {
+                        let robot_manager = robots.lock().unwrap();
+                        self_peer_id = robot_manager.self_peer_id.clone();
+                    }
+                    if signed_message.encryption.is_some() && signed_message.to!=Some(self_peer_id){
+                        info!("Enc message");
+                        continue;
+                    }
+
                     let message = serde_json::from_str::<Message>(&signed_message.message)?;
 
                     let mut should_process = false;
                     {
-                        let robot_manager = robots.lock().unwrap();
+                        let mut robot_manager = robots.lock().unwrap();
+                        robot_manager.network_manager.process_handshake(&signed_message.public_key, vec!());
                         if message.to.unwrap_or("".to_string()) == robot_manager.self_peer_id
                             || matches!(message.content, MessageContent::UpdateConfig { .. })
-                             
+
                         {
                             let role = robot_manager.get_role(signed_message.public_key);
-                            info!("role: {:?}", role);
+                            debug!("role: {:?}", role);
                             if matches!(role, RobotRole::Owner)
                                 || matches!(role, RobotRole::OrganizationUser)
                             {
@@ -50,10 +62,10 @@ pub async fn main_normal(
                             }
                         }
                     }
-                    if matches!(message.content, MessageContent::Handshake {  }){
+                    if matches!(message.content, MessageContent::Handshake { .. }){
                         should_process = true;
                     }
-                    info!("should process {}", should_process);
+                    debug!("should process {}", should_process);
 
                     if should_process{
                         match message.content{
@@ -109,6 +121,14 @@ pub async fn main_normal(
                                         let robots_config = robot_manager.get_robots_config();
                                         info!("config: {:?}", robots_config);
                                         response_content = Some(MessageResponse::GetRobotsConfig { config:robots_config })
+                                    },
+                                    MessageRequest::JobInfo{job_id}=>{
+                                        info!("JobInfo request");
+                                        let job_manager = jobs.lock().unwrap();
+                                        let job_info = job_manager.get_job_info(&job_id);
+                                        info!("job info: {:?}", job_info);
+                                        response_content = Some(MessageResponse::JobInfo { job_info})
+
                                     }
                                 }
                                 if let Some(message_response) =response_content{
@@ -120,16 +140,11 @@ pub async fn main_normal(
                                     ))?);
                                 }
                             },
-                            MessageContent::Handshake{}=>{
-                                let identity =
-                                    libp2p::identity::ed25519::PublicKey::try_from_bytes(&signed_message.public_key)?;
-                                let public_key: libp2p::identity::PublicKey = identity.into();
-                                let peer_id = public_key.to_peer_id();
-                                let from = peer_id.to_base58();
-                                info!("Got handshake from {}", from);
+                            MessageContent::Handshake{peers}=>{
+
                                 let mut robot_manager = robots.lock().unwrap();
-                                robot_manager.network_manager.process_handshake(from);
-                                
+                                robot_manager.network_manager.process_handshake(&signed_message.public_key, peers);
+
                             }
                             _=>{}
                         }
@@ -140,15 +155,16 @@ pub async fn main_normal(
                 }
             },
             _ = handshake_timer.tick()=>{
-            
-                let message_content = MessageContent::Handshake {  };
+
+                let mut robot_manager = robots.lock().unwrap();
+                let peers = robot_manager.get_peers();
+                let message_content = MessageContent::Handshake { peers: peers.into_iter().map(|x| x.to_base58()).collect::<Vec<String>>()};
                 let _ = from_message_tx.send(serde_json::to_string(&Message::new(
                     message_content,
                     "".to_string(),
                     None
                 ))?);
 
-                let mut robot_manager = robots.lock().unwrap();
                 robot_manager.network_manager.clean_old_handshakes();
 
 
