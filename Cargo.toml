@@ -33,5 +33,11 @@ libp2p-identity = { version="0.2.8", features=["peerid"]}
 openssl = { version = "0.10", features = ["vendored"] }
 libp2p-kad = "0.45.3"
 tokio-tungstenite = "0.23.1"
+libp2p-stream = "0.2.0-alpha"
+snow = "0.9.6"
+sha2 = "0.10.8"
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
+rand = "0.8.5"
+chacha20poly1305 = "0.10.1"
 
 
